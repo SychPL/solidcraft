@@ -133,3 +133,62 @@ fn a_thin_torus_tube_stops_a_ray() {
     let roots = surface::torus_roots(Vec3::new(100., -50., 0.), Vec3::new(0., 1., 0.), Vec3::new(0., 0., 1.), 100., 0.1, [0., 200.]);
     assert!(roots.iter().filter(|(_, grazing)| !grazing).count() >= 2, "{roots:?}");
 }
+
+#[test]
+fn a_thin_tube_on_a_huge_torus_stops_a_ray() {
+    // R 100 m, r 1 mm: inside the tube the implicit function stays far below a size^4 floor.
+    // A radial ray from 5 mm inside the centre circle crosses the tube at 4 and 6 mm.
+    let roots = surface::torus_roots(Vec3::new(100_000. - 5., 0., 0.), Vec3::new(1., 0., 0.), Vec3::new(0., 0., 1.), 100_000., 1., [0., 10.]);
+    let hits: Vec<f64> = roots.iter().filter(|(_, grazing)| !grazing).map(|(l, _)| *l).collect();
+    // The implicit form cancels terms of 4e20 here: the roots are good to about 1e-6 mm.
+    assert!(hits.len() == 2 && (hits[0] - 4.).abs() < 1e-5 && (hits[1] - 6.).abs() < 1e-5, "{roots:?}");
+}
+
+#[test]
+fn a_hair_thin_tube_on_a_kilometre_torus_stops_a_ray() {
+    // R 1 km, r 0.1 mm (R/r = 1e7): roots at 0.9 and 1.1 mm, good to about 1e-4 mm here.
+    let roots = surface::torus_roots(Vec3::new(1e6 - 1., 0., 0.), Vec3::new(1., 0., 0.), Vec3::new(0., 0., 1.), 1e6, 0.1, [0., 2.]);
+    let hits: Vec<f64> = roots.iter().filter(|(_, grazing)| !grazing).map(|(l, _)| *l).collect();
+    assert!(hits.len() == 2 && (hits[0] - 0.9).abs() < 1e-3 && (hits[1] - 1.1).abs() < 1e-3, "{roots:?}");
+}
+
+#[test]
+fn a_ray_from_the_hole_crosses_a_thin_large_torus() {
+    // R 4 m, r 0.01 mm, from the centre outward over 8 m: only the shell around the tube is sampled.
+    let roots = surface::torus_roots(Vec3::new(0., 0., 0.), Vec3::new(1., 0., 0.), Vec3::new(0., 0., 1.), 4000., 0.01, [0., 8000.]);
+    let hits: Vec<f64> = roots.iter().filter(|(_, grazing)| !grazing).map(|(l, _)| *l).collect();
+    assert!(hits.len() == 2 && (hits[0] - 3999.99).abs() < 1e-6 && (hits[1] - 4000.01).abs() < 1e-6, "{roots:?}");
+}
+
+#[test]
+fn a_torus_seen_nearly_along_its_axis_keeps_its_silhouettes() {
+    // Meridian starting off the equator and a view 1e-4 rad from the axis: the silhouette lives
+    // in narrow profile intervals around the equators, which must not fall between samples.
+    let frame = crate::brep::Frame { origin: [0.; 3], x_axis: [1., 0., 0.], y_axis: [0., 1., 0.] };
+    let tau = std::f64::consts::TAU;
+    let shift = std::f64::consts::PI / 720.;
+    let s =
+        surface::S3::new(&Surface::Torus { frame, major_radius: 1000., minor_radius: 500., longitude: [0., tau], meridian: [shift, shift + tau] })
+            .unwrap();
+    let d = Vec3::new(1e-4, 0., -1.).normalized().unwrap();
+    let curves = s.rev_silhouette(d);
+    // Both the outer (radius about 1500) and the inner (about 500) silhouettes are there.
+    let radii: Vec<f64> = curves
+        .iter()
+        .flat_map(|(c, _)| {
+            let [t0, t1] = c.domain();
+            (0..=8).map(move |i| c.at(t0 + (t1 - t0) * i as f64 / 8.))
+        })
+        .map(|p| p.x.hypot(p.y))
+        .collect();
+    assert!(radii.iter().any(|r| *r > 1400.) && radii.iter().any(|r| *r < 600.), "{radii:?}");
+}
+
+#[test]
+fn a_shallow_cut_through_a_torus_tube_is_found() {
+    // R 20, r 5, a ray along the axis 0.01 mm inside the outer equator: a 0.63 mm chord.
+    let roots = surface::torus_roots(Vec3::new(24.99, 0., -10.), Vec3::new(0., 0., 1.), Vec3::new(0., 0., 1.), 20., 5., [0., 20.]);
+    let hits: Vec<f64> = roots.iter().filter(|(_, grazing)| !grazing).map(|(l, _)| *l).collect();
+    let half = (25f64 - 4.99f64.powi(2)).sqrt();
+    assert!(hits.len() == 2 && (hits[0] - (10. - half)).abs() < 1e-6 && (hits[1] - (10. + half)).abs() < 1e-6, "{roots:?}");
+}

@@ -262,22 +262,13 @@ pub fn prepare(b: &Brep, opts: &Options) -> Result<Prepared, HlrError> {
             report.max_trim_chord = report.max_trim_chord.max(trim.chord_error);
             let (mut lo, mut hi) = (trim.lo, trim.hi);
             if !matches!(surface, S3::Plane { .. }) {
-                // Curved faces can bulge past their boundary: include interior chart samples.
-                if let Some((a, z)) = trim.uv_bounds() {
-                    for j in 0..=12 {
-                        for i in 0..=12 {
-                            let uv = [a[0] + (z[0] - a[0]) * i as f64 / 12., a[1] + (z[1] - a[1]) * j as f64 / 12.];
-                            if trim.contains(uv) != Some(false) {
-                                let p = surface.point(uv);
-                                if p.is_finite() {
-                                    lo = lo.min(p);
-                                    hi = hi.max(p);
-                                }
-                            }
-                        }
-                    }
+                // Curved faces can bulge past their boundary: bound them by the whole surface's
+                // guaranteed box (spline hull, turned profile), clipped to nothing tighter.
+                if let Some((blo, bhi)) = surface.bound() {
+                    lo = lo.min(blo);
+                    hi = hi.max(bhi);
                 }
-                let pad = (hi - lo).len() * 0.02;
+                let pad = (hi - lo).len() * 1e-6;
                 lo -= Vec3::new(pad, pad, pad);
                 hi += Vec3::new(pad, pad, pad);
             }
@@ -591,7 +582,10 @@ pub fn hidden_lines(defs: &[Prepared], scene: &[Placement], view: &View, opts: &
     }
     stats.tracks = tracks.len();
     // 2. Screen samples.
-    for t in &mut tracks {
+    for (ti, t) in tracks.iter_mut().enumerate() {
+        if ti % 64 == 0 && cancel() {
+            return Err(HlrError::Cancelled);
+        }
         let Some(p) = scene.get(t.placement) else { continue };
         let c = t.c3();
         let mut ts: Vec<f64> = c.breaks().into_iter().filter(|x| *x > t.range[0] && *x < t.range[1]).collect();
@@ -611,7 +605,34 @@ pub fn hidden_lines(defs: &[Prepared], scene: &[Placement], view: &View, opts: &
             }
         }
         params.push(t.range[1]);
-        let samples: Vec<(f64, [f64; 2])> = params.into_iter().map(|x| (x, view.screen(p.apply(c.at(x))))).collect();
+        let screen = |x: f64| view.screen(p.apply(c.at(x)));
+        let mut samples: Vec<(f64, [f64; 2])> = params.into_iter().map(|x| (x, screen(x))).collect();
+        // Halve chords of exact curves until their sag on screen is within the target, so
+        // chords stand for the curve closely enough for coincidence and crossing tests.
+        if !matches!(c, C3::Line { .. } | C3::Polyline(_)) {
+            let target = 1e-7 * scale.max(1.);
+            for _ in 0..12 {
+                let mut next = Vec::with_capacity(samples.len() * 2);
+                let mut split = false;
+                for w in samples.windows(2) {
+                    let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
+                    next.push(*a);
+                    let m = 0.5 * (a.0 + b.0);
+                    let q = screen(m);
+                    if point_segment(q, a.1, b.1) > target && next.len() < 1 << 16 {
+                        next.push((m, q));
+                        split = true;
+                    }
+                }
+                if let Some(last) = samples.last() {
+                    next.push(*last);
+                }
+                samples = next;
+                if !split {
+                    break;
+                }
+            }
+        }
         // Chord sag on screen: exact for lines, measured at the middle for curves; a sampled
         // silhouette's chords stand for the true curve to within its measured deviation.
         // A fitted source record stands for the true curve to within its bound.
@@ -688,7 +709,7 @@ pub fn hidden_lines(defs: &[Prepared], scene: &[Placement], view: &View, opts: &
     stats.phase_ms[2] = clock.lap();
     // Coverage is checked every 1e-4 of the scene (5 um to 0.5 mm): a gap narrower than that
     // in a coincident line is not seen.
-    cover(&mut lines, 1e-7 + 1e-9 * scale, (1e-4 * scale).clamp(0.005, 0.5));
+    cover(&mut lines, 1e-7 + 1e-9 * scale, (1e-4 * scale).clamp(0.005, 0.5), cancel)?;
     stats.phase_ms[3] = clock.lap();
     for p in lines.iter().flat_map(|l| l.pieces.iter()) {
         stats.covered_pieces += usize::from(p.covered);
@@ -749,7 +770,8 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
         if si % 65536 == 0 && (ctx.cancel)() {
             return Err(HlrError::Cancelled);
         }
-        let (a, b) = (idx([s.a[0].min(s.b[0]), s.a[1].min(s.b[1])]), idx([s.a[0].max(s.b[0]), s.a[1].max(s.b[1])]));
+        let g = s.sag + 1e-9 * ctx.scale;
+        let (a, b) = (idx([s.a[0].min(s.b[0]) - g, s.a[1].min(s.b[1]) - g]), idx([s.a[0].max(s.b[0]) + g, s.a[1].max(s.b[1]) + g]));
         entries = entries.saturating_add((b.0 - a.0 + 1).saturating_mul(b.1 - a.1 + 1));
         if entries > 50_000_000 {
             return Err(HlrError::Budget("crossing grid"));
@@ -841,9 +863,13 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
                 let q = ctx.view.screen(pa.apply(ta.c3().at(mid)));
                 let sag = |t: &Track| t.sags.iter().fold(0., |m: f64, v| m.max(*v));
                 let reach = 4. * (sag(ta) + sag(tb)) + tol;
-                tb.samples.windows(2).any(|w| match (w.first(), w.get(1)) {
-                    (Some(a), Some(b)) => point_segment(q, a.1, b.1) <= reach,
-                    _ => false,
+                // Only the other curve's chords between its two crossings (and one either side).
+                let (j0, j1) = (x.4.min(y.4).saturating_sub(1), x.4.max(y.4) + 2);
+                tb.samples.get(j0..j1.min(tb.samples.len())).is_some_and(|run| {
+                    run.windows(2).any(|w| match (w.first(), w.get(1)) {
+                        (Some(a), Some(b)) => point_segment(q, a.1, b.1) <= reach,
+                        _ => false,
+                    })
                 })
             });
             if together {
@@ -912,7 +938,7 @@ fn refine(tracks: &[Track], ctx: &Ctx, ta: usize, sa: f64, tb: usize, sb: f64) -
 }
 
 /// Marks hidden and uncertain pieces lying within `tol` of a visible piece of another line.
-fn cover(lines: &mut [Line], tol: f64, step: f64) {
+fn cover(lines: &mut [Line], tol: f64, step: f64, cancel: &dyn Fn() -> bool) -> Result<(), HlrError> {
     // Chords of visible and hidden pieces, keyed by (line, piece) so a piece never covers
     // itself; another piece of the same line may (a circle seen edge-on folds over itself).
     // `tol` is the base; each chord adds its own sag, each query point the sag of its chord.
@@ -924,7 +950,7 @@ fn cover(lines: &mut [Line], tol: f64, step: f64) {
     }
     let reach = segs.iter().map(|s| s.4).fold(0., f64::max) * 2. + tol;
     if segs.is_empty() {
-        return;
+        return Ok(());
     }
     // Bucket the chords on a grid of cells at least `tol` wide.
     let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
@@ -957,7 +983,9 @@ fn cover(lines: &mut [Line], tol: f64, step: f64) {
                 _ => false,
             }
     };
+    let checks = std::cell::Cell::new(0usize);
     let near = |key: (usize, usize), own: Visibility, q: [f64; 2], slack: f64| {
+        checks.set(checks.get() + 1);
         let Some(bucket) = grid.get(at(q[1], 1) * n + at(q[0], 0)) else { return false };
         bucket
             .iter()
@@ -970,13 +998,21 @@ fn cover(lines: &mut [Line], tol: f64, step: f64) {
             // chord's ends and middle yet leave gaps between them). Points between the exact
             // ones lie on the chord, up to the piece's sag from its curve.
             let mut covered = !p.points.is_empty();
+            if checks.get() > 200_000_000 {
+                return Err(HlrError::Budget("coverage"));
+            }
+            if pi % 16 == 0 && cancel() {
+                return Err(HlrError::Cancelled);
+            }
             for w in p.points.windows(2) {
                 let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
                 let k = ((a[0] - b[0]).hypot(a[1] - b[1]) / step).ceil().clamp(1., 1e6) as usize;
                 covered = covered
                     && (0..=k).all(|j| {
                         let f = j as f64 / k as f64;
-                        let slack = if j == 0 || j == k { 0. } else { p.sag };
+                        // The piece's own representation error (chord sag, fitted bound) applies
+                        // to every point it is checked at.
+                        let slack = p.sag;
                         near((li, pi), p.visibility, [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f], slack)
                     });
                 if !covered {
@@ -984,11 +1020,12 @@ fn cover(lines: &mut [Line], tol: f64, step: f64) {
                 }
             }
             if let [q] = p.points.as_slice() {
-                covered = near((li, pi), p.visibility, *q, 0.);
+                covered = near((li, pi), p.visibility, *q, p.sag);
             }
             p.covered = covered;
         }
     }
+    Ok(())
 }
 
 fn point_segment(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -1118,7 +1155,7 @@ fn classify_point(ctx: &Ctx, placement: usize, own: &[usize], own_eps: f64, worl
             for h in &hits {
                 let p = f.surface.point(h.uv);
                 let margin = f.trim.margin(p);
-                let tol = 2. * f.trim.chord_error + 1e-7 * ctx.scale;
+                let tol = 2. * f.trim.chord_error + 1e-7 * (f.hi - f.lo).len();
                 let inside = f.trim.contains(h.uv);
                 if let Some(log) = log.as_mut() {
                     log.push(format!(
