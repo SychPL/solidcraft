@@ -1,0 +1,26 @@
+name: hlr-stress
+on: push
+jobs:
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+      - run: cargo build --release --example hlr_bench -p solidcraft-geom
+      - shell: bash
+        run: |
+          B=target/release/examples/hlr_bench
+          [ -f "$B.exe" ] && B="$B.exe"
+          n=$(nproc 2>/dev/null || echo 4)
+          echo "cores $n"
+          for round in 1 2 3; do
+            for i in $(seq 1 "$n"); do
+              ( "$B" hlr-stress/loft-0.brep.json hlr-stress/loft-side.scene.json > "out-$round-$i.txt" 2>&1; echo "exit $?" >> "out-$round-$i.txt" ) &
+            done
+            wait
+          done
+          grep -ho '"pieces":[0-9]*,"rays":[0-9]*\|panicked.*\|overflow.*\|exit [0-9]*' out-*.txt | sort | uniq -c
