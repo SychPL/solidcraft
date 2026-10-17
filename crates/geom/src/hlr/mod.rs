@@ -539,9 +539,17 @@ pub fn hidden_lines(defs: &[Prepared], scene: &[Placement], view: &View, opts: &
                 source: Source::Edge { edge: ei, tangent: e.kind == EdgeKind::Tangent },
                 acc: e.acc,
                 own: e.faces.clone(),
-                own_eps: match e.acc {
-                    Accuracy::Bounded(tol) => ctx.eps_own.max(10. * tol),
-                    _ => ctx.eps_own,
+                // Skip the ray's own start on its faces: rounding grows with the coordinates
+                // (1e-9 of the scene), the margin with the faces themselves (1e-6 of their
+                // size), never with the whole scene, so small parts in large scenes keep their
+                // self-occlusion.
+                own_eps: {
+                    let size = e.faces.iter().filter_map(|f| def.faces.get(*f)).map(|f| (f.hi - f.lo).len()).fold(0., f64::max);
+                    let base = (1e-9 * ctx.scale).max(1e-6 * size);
+                    match e.acc {
+                        Accuracy::Bounded(tol) => base.max(10. * tol),
+                        _ => base,
+                    }
                 },
                 samples: Vec::new(),
                 sags: Vec::new(),
@@ -566,8 +574,10 @@ pub fn hidden_lines(defs: &[Prepared], scene: &[Placement], view: &View, opts: &
                         acc: s.acc,
                         own: f.group.clone(),
                         own_eps: match s.acc {
-                            Accuracy::Sampled(dev) => ctx.eps_own.max(2. * (2. * (f.hi - f.lo).len() * dev).sqrt()),
-                            _ => ctx.eps_own,
+                            Accuracy::Sampled(dev) => {
+                                (1e-9 * ctx.scale).max(1e-6 * (f.hi - f.lo).len()).max(2. * (2. * (f.hi - f.lo).len() * dev).sqrt())
+                            }
+                            _ => (1e-9 * ctx.scale).max(1e-6 * (f.hi - f.lo).len()),
                         },
                         samples: Vec::new(),
                         sags: Vec::new(),
