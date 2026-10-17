@@ -1,7 +1,7 @@
 name: hlr-stress
 on: push
 jobs:
-  stress:
+  harness:
     strategy:
       fail-fast: false
       matrix:
@@ -10,17 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
-      - run: cargo build --release --example hlr_bench -p solidcraft-geom
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libgtk-3-dev libxkbcommon-dev libwayland-dev
       - shell: bash
         run: |
-          B=target/release/examples/hlr_bench
-          [ -f "$B.exe" ] && B="$B.exe"
-          n=$(nproc 2>/dev/null || echo 4)
-          echo "cores $n"
-          for round in 1 2 3; do
-            for i in $(seq 1 "$n"); do
-              ( "$B" hlr-stress/loft-0.brep.json hlr-stress/loft-side.scene.json > "out-$round-$i.txt" 2>&1; echo "exit $?" >> "out-$round-$i.txt" ) &
-            done
-            wait
+          mkdir -p hlr-out
+          for i in 1 2 3; do
+            HLR_OUT=hlr-out cargo test --release -q -p solidcraft-engine --lib hlr_investigation -- --ignored --nocapture --test-threads 1 > run-$i.txt 2>&1
+            echo "run $i exit $?"
+            grep -E "^[a-z]+/[a-z]+: |test result|panicked|overflow|STATUS|exit code" run-$i.txt | sed -E 's/"compare_with_dxf".*//' | cut -c1-200
           done
-          grep -ho '"pieces":[0-9]*,"rays":[0-9]*\|panicked.*\|overflow.*\|exit [0-9]*' out-*.txt | sort | uniq -c
