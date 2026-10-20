@@ -962,14 +962,18 @@ fn conical_cut_junction(a: &Body, b: &Body) -> bool {
         if !b.solid.face_iter().any(|face| cone(b, face)) {
             return Ok(false);
         }
+        let cones: Vec<&mt::Face> = a.solid.face_iter().filter(|face| cone(a, face)).collect();
+        if cones.is_empty() {
+            return Ok(false);
+        }
         // The cutter's reach: its mesh's box, grown past the mesh's deviation. A cutter that
         // can't be meshed reaches everywhere, as before.
         let tol = (a.size().max(b.size()) * 1e-4).max(1e-6);
-        let Ok(mesh) = b.tessellate(tol) else { return Ok(a.solid.face_iter().any(|face| cone(a, face))) };
+        let Ok(mesh) = b.tessellate(tol) else { return Ok(true) };
         let reach = mesh.bounds().inflated(2.0 * tol);
         // A face on a cone lies in the box of its boundary: each point of it is on a straight
         // line across it between two boundary points. One whose boundary can't be sampled counts.
-        Ok(a.solid.face_iter().filter(|face| cone(a, face)).any(|face| crate::coplanar::face_box(face, tol).is_none_or(|bb| bb.meets(&reach))))
+        Ok(cones.into_iter().any(|face| crate::coplanar::face_box(face, tol).is_none_or(|bb| bb.meets(&reach))))
     })
     .unwrap_or(false)
 }
