@@ -1,5 +1,5 @@
 use serde::Serialize;
-use solidcraft_geom::{Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Vec3};
 use truck_meshalgo::prelude::*;
 use truck_modeling as mt;
 
@@ -50,7 +50,27 @@ pub struct Body {
     /// part is tessellated once rather than once per instance. Dropped by anything that changes
     /// what the body shows (its geometry is never changed in place).
     pub(crate) display_of: Option<std::sync::Arc<(std::sync::Arc<SharedDisplay>, [[f64; 4]; 4])>>,
+    /// Meshes of this solid kept for reuse, set by [`Body::keeping_meshes`]: a check that
+    /// intersects one large body with many small ones meshes it at the same tolerance each time.
+    pub(crate) meshes: Option<std::sync::Arc<MeshMemo>>,
+    /// Its revolved faces were turned away from their seams (see `rephase_revolved`), so a
+    /// placed copy, which keeps them where they are, need not turn them again: searching every
+    /// revolved face of every placed occurrence was most of the time moving an assembly took.
+    pub(crate) phased: bool,
 }
+
+/// The meshes made of one solid (see [`Body::keeping_meshes`]), by tolerance, angle and
+/// refinement. They answer only for that solid: a copy whose solid was replaced makes its own.
+#[derive(Debug)]
+pub(crate) struct MeshMemo {
+    solid: std::sync::Arc<Solid>,
+    made: std::sync::Mutex<Vec<((u64, u64, bool), std::sync::Arc<Mesh>)>>,
+    /// The meshes a boolean makes of the solid's shells, by tolerance.
+    shells: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<truck_shapeops::MeshedShell>>)>>,
+}
+
+/// Meshes a [`MeshMemo`] keeps at most (the oldest goes first).
+const MEMO_MESHES: usize = 4;
 
 /// The display mesh of a body that several placed copies show (see `Body::display_of`): the
 /// body, and its mesh once made.
@@ -62,7 +82,26 @@ pub(crate) struct SharedDisplay {
 
 impl SharedDisplay {
     pub(crate) fn new(original: Body) -> Self {
-        SharedDisplay { original: Body { display_of: None, ..original }, mesh: std::sync::OnceLock::new() }
+        SharedDisplay { original: Body { display_of: None, meshes: None, ..original }, mesh: std::sync::OnceLock::new() }
+    }
+}
+
+/// The display one body shares with its placed copies (see [`Body::display_share`]), so a
+/// saved design can store the part once and give its copies the same display again.
+#[derive(Clone, Debug)]
+pub struct DisplayShare(std::sync::Arc<SharedDisplay>);
+
+impl DisplayShare {
+    pub fn new(original: Body) -> Self {
+        DisplayShare(std::sync::Arc::new(SharedDisplay::new(original)))
+    }
+    /// The body whose display the copies show.
+    pub fn original(&self) -> &Body {
+        &self.0.original
+    }
+    /// Identity: copies that show the same display have the same id.
+    pub fn id(&self) -> usize {
+        std::sync::Arc::as_ptr(&self.0) as usize
     }
 }
 
@@ -217,7 +256,7 @@ const MIN_DISPLAY_ANGLE: f64 = std::f64::consts::PI / 180.0;
 /// non-manifold shells an import can produce). Boundaries that lie on their surface only within
 /// tolerance (imports, boolean results) are projected onto it.
 fn mesh_shells(solid: &Solid, tol: f64) -> Vec<MeshedShell> {
-    mesh_shells_within(solid, Deflection { rulings: true, ..Deflection::chord(tol) })
+    mesh_shells_within(solid, Deflection { display: true, ..Deflection::chord(tol) })
 }
 
 /// [`mesh_shells`] divided by a chord tolerance and, when it has one, a bound on the angle a
@@ -378,6 +417,8 @@ fn refined_with_cache(pm: &PolygonMesh, surf: &mt::Surface, tol: f64, memoize: b
 /// (same geometry) so the face sits around angle π, well away from the wrap.
 fn rephase_revolved(solid: Solid) -> Solid {
     use mt::{BoundedCurve, ParametricCurve, SearchNearestParameter};
+    #[cfg(test)]
+    REPHASED.with(|n| n.set(n.get() + 1));
     let r = guard("rephase", || {
         let mut changed = false;
         let mut shells = Vec::new();
@@ -496,6 +537,8 @@ fn polyline_mid(pts: &[Vec3]) -> (Vec3, f64) {
 thread_local! {
     /// Solids [`Body::new`] meshed on this thread to orient them (tests count the work an import does).
     pub(crate) static ORIENTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Solids `rephase_revolved` searched on this thread.
+    pub(crate) static REPHASED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Deflection the orientation mesh uses: coarse enough for a large solid, fine enough that a
@@ -507,14 +550,8 @@ fn orientation_tolerance(span: f64) -> f64 {
 
 /// Bounding-box diagonal of a solid's vertices (1 when it has no finite extent).
 fn span_of(solid: &Solid) -> f64 {
-    let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-    let mut hi = -lo;
-    for v in solid.vertex_iter() {
-        let p = from_p3(v.point());
-        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
-        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
-    }
-    if lo.x.is_finite() { (hi - lo).len() } else { 1.0 }
+    let bounds: Aabb3 = solid.vertex_iter().map(|v| from_p3(v.point())).collect();
+    if bounds.is_empty() { 1.0 } else { bounds.diagonal() }
 }
 
 /// Equal shared values: the same allocation (a clone of the body), else equal contents.
@@ -531,17 +568,22 @@ impl Body {
     /// operation made it) is not part of it: an operation that leaves a body as it is (a cut by
     /// a tool clear of it) gives the same body, with that operation's history.
     pub fn same(&self, other: &Body) -> bool {
+        self.same_shape(other)
+            && self.color == other.color
+            && same_shared(&self.paint, &other.paint)
+            && same_shared(&self.splits, &other.splits)
+            && same_shared(&self.face_sources, &other.face_sources)
+            && self.regularization_protected == other.regularization_protected
+    }
+
+    /// The very same shape (shared solid or mesh), whatever its colour, paint or face splits.
+    pub fn same_shape(&self, other: &Body) -> bool {
         std::sync::Arc::ptr_eq(&self.solid, &other.solid)
             && match (&self.mesh, &other.mesh) {
                 (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
                 (None, None) => true,
                 _ => false,
             }
-            && self.color == other.color
-            && same_shared(&self.paint, &other.paint)
-            && same_shared(&self.splits, &other.splits)
-            && same_shared(&self.face_sources, &other.face_sources)
-            && self.regularization_protected == other.regularization_protected
     }
 
     pub(crate) fn new(solid: Solid) -> Result<Body> {
@@ -593,6 +635,8 @@ impl Body {
             regularization_protected: false,
             history: None,
             display_of: None,
+            meshes: None,
+            phased: true,
         })
     }
 
@@ -601,11 +645,12 @@ impl Body {
     /// unless it mirrors them, so its orientation is read from the matrix rather than meshed
     /// again. Only for closed solids; `coarse` is the input's cached missing-face count, which a
     /// rigid placement preserves exactly.
-    pub(crate) fn new_placed(solid: Solid, flip: bool, coarse: Option<(f64, usize)>) -> Result<Body> {
+    /// `phased`: the solid was placed from a body whose revolved faces are turned already.
+    pub(crate) fn new_placed(solid: Solid, flip: bool, coarse: Option<(f64, usize)>, phased: bool) -> Result<Body> {
         if solid.boundaries().is_empty() {
             return Err(KernelError::Failed("empty result".into()));
         }
-        Body::placed_as_is(rephase_revolved(solid), flip, coarse)
+        Body::placed_as_is(if phased { solid } else { rephase_revolved(solid) }, flip, coarse)
     }
 
     /// [`Body::new_placed`] for a solid whose revolved faces were already turned away from
@@ -631,6 +676,8 @@ impl Body {
             regularization_protected: false,
             history: None,
             display_of: None,
+            meshes: None,
+            phased: true,
         })
     }
 
@@ -958,6 +1005,23 @@ impl Body {
         self
     }
 
+    /// The display this body shows placed by a matrix (by columns), when it is a placed copy of
+    /// another body.
+    pub fn display_share(&self) -> Option<(DisplayShare, [[f64; 4]; 4])> {
+        self.display_of.as_deref().map(|(shared, t)| (DisplayShare(shared.clone()), *t))
+    }
+
+    /// The same body showing `share`'s display placed by `t` (see [`Body::display_share`]).
+    pub fn with_display_share(self, share: &DisplayShare, t: [[f64; 4]; 4]) -> Body {
+        self.with_display_of(share.0.clone(), t)
+    }
+
+    /// Identity of the solid: clones of a body (and bodies a feature passed through unchanged)
+    /// share it.
+    pub fn solid_id(&self) -> usize {
+        std::sync::Arc::as_ptr(&self.solid) as usize
+    }
+
     pub fn with_split_lines(mut self, s: Option<std::sync::Arc<Vec<Vec<Vec3>>>>) -> Body {
         self.splits = s.filter(|l| !l.is_empty());
         // Split lines are drawn: the shared mesh does not have them.
@@ -1011,6 +1075,52 @@ impl Body {
         }
         let d = b.diagonal();
         if d.is_finite() && d > 0.0 { d } else { 1.0 }
+    }
+
+    /// A box around the body worked out without meshing it: its vertices and its edges' control
+    /// points (a spline lies in the hull of its controls; a face's surface does not count, as an
+    /// imported face is often trimmed from a far larger one). A face curving out beyond all of
+    /// its edges (a dome on a circle) can reach past it, so it frames a view while the body is
+    /// still being meshed; [`Mesh::bounds`] is the exact one.
+    /// A mesh body's box is its triangles'.
+    pub fn outline_bounds(&self) -> solidcraft_geom::Aabb3 {
+        crate::guard("outline bounds", || Ok(self.outline_bounds_unguarded())).unwrap_or(solidcraft_geom::Aabb3::EMPTY)
+    }
+
+    fn outline_bounds_unguarded(&self) -> solidcraft_geom::Aabb3 {
+        use mt::BoundedCurve;
+        let mut b = solidcraft_geom::Aabb3::EMPTY;
+        if let Some(m) = &self.mesh {
+            for p in &m.positions {
+                b.add(*p);
+            }
+            return b;
+        }
+        let homogeneous = |b: &mut solidcraft_geom::Aabb3, v: mt::Vector4| {
+            if v.w > 0.0 {
+                b.add(Vec3::new(v.x / v.w, v.y / v.w, v.z / v.w));
+            }
+        };
+        for v in self.solid.vertex_iter() {
+            b.add(from_p3(v.point()));
+        }
+        for e in self.solid.edge_iter() {
+            match e.curve() {
+                mt::Curve::Line(l) => {
+                    b.add(from_p3(l.0));
+                    b.add(from_p3(l.1));
+                }
+                mt::Curve::BSplineCurve(c) => c.control_points().iter().for_each(|p| b.add(from_p3(*p))),
+                mt::Curve::NurbsCurve(c) => c.control_points().iter().for_each(|p| homogeneous(&mut b, *p)),
+                mt::Curve::IntersectionCurve(c) => {
+                    let (t0, t1) = c.range_tuple();
+                    for i in 0..=8 {
+                        b.add(from_p3(mt::ParametricCurve::subs(&e.curve(), t0 + (t1 - t0) * f64::from(i) / 8.0)));
+                    }
+                }
+            }
+        }
+        b
     }
 
     /// The body's volume from a mesh at `tol`, measured once per (solid, tolerance): clones of
@@ -1073,7 +1183,45 @@ impl Body {
     /// [`Body::tessellate_with`] in which no facet turns more than `angle` radians either
     /// (infinite: the chord tolerance alone).
     fn tessellate_within(&self, tol: f64, angle: f64, refine: bool) -> Result<Mesh> {
-        crate::profile::timed(crate::profile::Kind::Tessellate, || self.tessellate_within_untimed(tol, angle, refine))
+        let mesh = || crate::profile::timed(crate::profile::Kind::Tessellate, || self.tessellate_within_untimed(tol, angle, refine));
+        let memo = self.meshes.as_ref().filter(|m| std::sync::Arc::ptr_eq(&m.solid, &self.solid));
+        // Held while meshing: threads asking for the same mesh wait for it rather than make it too.
+        let Some(Ok(mut made)) = memo.map(|m| m.made.lock()) else { return mesh() };
+        let key = (tol.to_bits(), angle.to_bits(), refine);
+        if let Some((_, m)) = made.iter().find(|(k, _)| *k == key) {
+            return Ok(Mesh::clone(m));
+        }
+        let m = mesh()?;
+        if made.len() >= MEMO_MESHES {
+            made.remove(0);
+        }
+        made.push((key, std::sync::Arc::new(m.clone())));
+        Ok(m)
+    }
+
+    /// A copy of this body that keeps the meshes made of it for reuse, for as long as the copy
+    /// (or a clone of it) lives: for many operations on one large body at the same tolerance,
+    /// such as cutting it down to the region of each of many contacts.
+    pub fn keeping_meshes(&self) -> Body {
+        let (made, shells) = (std::sync::Mutex::new(Vec::new()), std::sync::Mutex::new(Vec::new()));
+        Body { meshes: Some(std::sync::Arc::new(MeshMemo { solid: self.solid.clone(), made, shells })), ..self.clone() }
+    }
+
+    /// The meshes of this body's shells a boolean at `tol` makes, when the body keeps its meshes
+    /// ([`Body::keeping_meshes`]); `None` otherwise.
+    pub(crate) fn boolean_meshes(&self, tol: f64) -> Option<std::sync::Arc<Vec<truck_shapeops::MeshedShell>>> {
+        let memo = self.meshes.as_ref().filter(|m| std::sync::Arc::ptr_eq(&m.solid, &self.solid))?;
+        // Held while meshing, as in `tessellate_within`.
+        let mut shells = memo.shells.lock().ok()?;
+        if let Some((_, m)) = shells.iter().find(|(k, _)| *k == tol.to_bits()) {
+            return Some(m.clone());
+        }
+        let made = std::sync::Arc::new(guard("boolean meshes", || Ok(truck_shapeops::meshes(&*self.solid, tol))).ok()?);
+        if shells.len() >= MEMO_MESHES {
+            shells.remove(0);
+        }
+        shells.push((tol.to_bits(), made.clone()));
+        Some(made)
     }
 
     fn tessellate_within_untimed(&self, tol: f64, angle: f64, refine: bool) -> Result<Mesh> {
@@ -1094,9 +1242,9 @@ impl Body {
             }
         }
         let deflection = if angle.is_finite() && angle > 0.0 {
-            Deflection { chord: tol, angle: angle.max(MIN_DISPLAY_ANGLE), floor: tol * DISPLAY_ANGLE_FLOOR, rulings: true }
+            Deflection { chord: tol, angle: angle.max(MIN_DISPLAY_ANGLE), floor: tol * DISPLAY_ANGLE_FLOOR, display: true }
         } else {
-            Deflection { rulings: true, ..Deflection::chord(tol) }
+            Deflection { display: true, ..Deflection::chord(tol) }
         };
         guard("tessellate", || {
             let meshed = mesh_shells_within(&self.solid, deflection);
@@ -1709,6 +1857,10 @@ impl Body {
 #[cfg(test)]
 #[path = "body_lump_tests.rs"]
 mod lump_tests;
+
+#[cfg(test)]
+#[path = "mesh_memo_tests.rs"]
+mod mesh_memo_tests;
 
 #[cfg(test)]
 #[path = "refine_cache_tests.rs"]

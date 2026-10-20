@@ -10,6 +10,7 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use mt::{BoundedCurve, Cut, InnerSpace, Invertible, MetricSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
+use solidcraft_geom::Ring;
 use truck_modeling as mt;
 
 use super::Ctx;
@@ -711,8 +712,8 @@ fn largest_gap(angles: &[f64]) -> Option<(f64, f64)> {
     }
     a.sort_by(f64::total_cmp);
     let (mut best, mut mid) = (0.0, 0.0);
-    for i in 0..a.len() {
-        let (Some(&x), Some(&y)) = (a.get(i), a.get((i + 1) % a.len())) else { continue };
+    let a = Ring::new(a);
+    for (i, (&x, &y)) in a.edges().enumerate() {
         let gap = if i + 1 == a.len() { y + TAU - x } else { y - x };
         if gap > best {
             best = gap;
@@ -1125,7 +1126,24 @@ pub(crate) fn surface(cx: &Ctx, id: u64, extent: &[mt::Point3], seam: &[mt::Poin
             let g = curve(cx, p.get(1).and_then(Param::as_ref_id).ok_or("extrusion without profile")?, depth + 1)?;
             let (_, v) = ent_of(cx, p.get(2), "extrusion vector")?;
             let d = direction(cx, v.params().get(1).and_then(Param::as_ref_id).ok_or("VECTOR without direction")?)?;
-            let nurbs: mt::NurbsCurve<mt::Vector4> = match bounded_curve(&g, extent)? {
+            let profile = match &g {
+                CurveGeo::Conic { f, a, b } if d.dot(f.z).abs() > 1e-12 => {
+                    // Keep the closed profile's parameter seam outside the trim. Otherwise a
+                    // tooth tip crossing it can mesh as almost the whole extruded ellipse.
+                    let dz = d.dot(f.z);
+                    let angle = |p: &mt::Point3| {
+                        let q = p - f.o;
+                        let q = q - d * (q.dot(f.z) / dz);
+                        (q.dot(f.y) / b).atan2(q.dot(f.x) / a)
+                    };
+                    let start = common_angle(seam.iter().map(angle))
+                        .or_else(|| largest_gap(&extent.iter().map(angle).collect::<Vec<_>>()).map(|(mid, _)| mid))
+                        .unwrap_or(0.0);
+                    mt::Curve::NurbsCurve(conic_arc(f, *a, *b, start, TAU))
+                }
+                _ => bounded_curve(&g, extent)?,
+            };
+            let nurbs: mt::NurbsCurve<mt::Vector4> = match profile {
                 mt::Curve::Line(l) => mt::BSplineCurve::new(mt::KnotVec::bezier_knot(1), vec![l.0, l.1]).into(),
                 mt::Curve::BSplineCurve(c) => c.into(),
                 mt::Curve::NurbsCurve(c) => c,
