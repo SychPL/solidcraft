@@ -59,6 +59,25 @@ with `control.pending`: `{"pending": <id>, "method": …, "done": false}` while 
 connection is refused at once with `{"ok": false, "busy": true, "error": "busy: …"}` and not
 run, so nothing is queued to apply unseen behind it.
 
+`control.pending` answers only for its own connection. `control.running` answers for the whole
+app, the same on every connection, at once (it never waits behind a running request, and a
+connection may ask it while it is `busy`): every request the app has been sent and has not
+answered yet, oldest first, from any connection, including a timed-out one whose connection has
+since closed:
+
+```text
+{"id":1,"method":"control.running","token":"…"}
+→ {"id":1,"ok":true,"result":{"running":[
+    {"connection":3,"id":17,"method":"engine.execute","command":"file.export","running_s":312.4,"queued":false},
+    {"connection":5,"id":2,"method":"engine.batch","steps":12,"running_s":4.1,"queued":true,"self":true}]}}
+```
+
+`running_s` counts seconds since the request arrived; `queued` is true while it still waits its
+turn behind another. `command` is the command id of `engine.execute` (a known one only) and
+`steps` the length of `engine.batch` or `engine.script`; parameters are never shown, so file
+paths and expressions stay with the connection that sent them. `self` marks the asking
+connection's own request. `{"running": []}` when the app is idle.
+
 Any request's `params` may carry `allow_paths: ["/abs/folder", …]`: every file that request
 reads, writes or deletes (command paths such as `file.export`'s `path` or `doc.recovery_*`'s
 `dir`, `ui.render`, `ui.screenshot`) must then lie inside one of those folders after `..` and

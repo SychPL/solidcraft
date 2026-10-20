@@ -255,6 +255,16 @@ pub fn tool_definitions() -> Vec<Value> {
             ),
             Effect::ReadOnly,
         ),
+        tool(
+            "running",
+            "What the app is running",
+            "What the app is running or has queued right now, for every client: each request's connection and id, method, \
+             command id (a batch's step count), seconds since it arrived (running_s) and whether it still waits its turn \
+             (queued); `self` marks a request sent on the connection that asks. Answers at once, even while the app is busy, \
+             and never shows parameters. Ask it when a call timed out or the app seems slow, before sending a change again.",
+            obj(json!({}), &[]),
+            Effect::ReadOnly,
+        ),
         tool("undo", "Undo", "Undo the last change to the design.", obj(json!({}), &[]), Effect::Edits),
         tool("redo", "Redo", "Redo the last undone change.", obj(json!({}), &[]), Effect::Edits),
         tool(
@@ -454,6 +464,7 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
             Some(_) => exec(b, "diagnostics.crash_report", pick(a, &["id"])),
             None => exec(b, "diagnostics.crash_reports", pick(a, &["limit"])),
         },
+        "running" => b.call("control.running", json!({})),
         "undo" => exec(b, "edit.undo", json!({})),
         "redo" => exec(b, "edit.redo", json!({})),
         "new_design" => exec(b, "file.new", pick(a, &["name"])),
