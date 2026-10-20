@@ -949,14 +949,27 @@ fn boolean_untimed(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
 }
 
 /// A conical cutter meeting a body with an earlier conical cut needs finer tracing at
-/// their junctions. Guard the analytic recognition as well as the Boolean itself.
+/// their junctions. Only a cone face of the body within the cutter's reach makes one: a
+/// countersink elsewhere on the part does not, and the refined tolerances cost every cut on a
+/// detailed part seconds and leave curves that slow the ones after it (#3365). Guard the
+/// analytic recognition as well as the Boolean itself.
 fn conical_cut_junction(a: &Body, b: &Body) -> bool {
     guard("conical cut junction", || {
-        let conical = |body: &Body| {
+        let cone = |body: &Body, face: &mt::Face| {
             let tol = (body.size() * 1e-5).max(1e-7);
-            body.solid.face_iter().any(|face| matches!(crate::offset::surf_of(face, tol), Some(crate::offset::Surf::Cone { .. })))
+            matches!(crate::offset::surf_of(face, tol), Some(crate::offset::Surf::Cone { .. }))
         };
-        Ok(conical(b) && conical(a))
+        if !b.solid.face_iter().any(|face| cone(b, face)) {
+            return Ok(false);
+        }
+        // The cutter's reach: its mesh's box, grown past the mesh's deviation. A cutter that
+        // can't be meshed reaches everywhere, as before.
+        let tol = (a.size().max(b.size()) * 1e-4).max(1e-6);
+        let Ok(mesh) = b.tessellate(tol) else { return Ok(a.solid.face_iter().any(|face| cone(a, face))) };
+        let reach = mesh.bounds().inflated(2.0 * tol);
+        // A face on a cone lies in the box of its boundary: each point of it is on a straight
+        // line across it between two boundary points. One whose boundary can't be sampled counts.
+        Ok(a.solid.face_iter().filter(|face| cone(a, face)).any(|face| crate::coplanar::face_box(face, tol).is_none_or(|bb| bb.meets(&reach))))
     })
     .unwrap_or(false)
 }

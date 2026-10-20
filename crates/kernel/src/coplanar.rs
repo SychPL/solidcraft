@@ -735,7 +735,7 @@ fn slab_beyond(n: Vec3, d: f64, depth: f64, extent: f64) -> Result<Body> {
 
 /// The box of a face's boundary sampled to within `tol` of each curve: the face, planar, lies
 /// within `tol` of it. `None` when the boundary can't be sampled.
-fn face_box(f: &mt::Face, tol: f64) -> Option<Aabb3> {
+pub(crate) fn face_box(f: &mt::Face, tol: f64) -> Option<Aabb3> {
     use mt::{BoundedCurve, ParameterDivision1D};
     const MAX_POINTS: usize = 100_000;
     guard("face box", || {

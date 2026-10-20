@@ -3012,3 +3012,42 @@ fn placing_a_body_does_not_turn_its_revolved_faces_again() {
     assert_eq!(a.faces, b.faces);
     assert!(a.bbox.min.dist(b.bbox.min) < 1e-9 && a.bbox.max.dist(b.bbox.max) < 1e-9);
 }
+
+/// A countersink cut into a part with an earlier countersink takes the ordinary boolean unless it
+/// reaches that countersink's cone. The finer tolerances of a conical junction (the part's size
+/// times 1e-5) were taken for every conical cutter once the part had a cone anywhere, and on a
+/// detailed part each such cut cost seconds and left curves that slowed every later one (#3365).
+#[test]
+fn a_countersink_away_from_an_earlier_one_is_cut_at_the_ordinary_tolerance() {
+    let (r, rc, half, top) = (1.65, 3.0, 45f64.to_radians(), 0.5);
+    // A countersink's cone as a hole cuts it: from above the top face to inside the hole radius.
+    let csink = |x: f64| {
+        let r_top = rc + top * half.tan();
+        let plane = Plane::from_normal(Vec3::new(x, 20.0, 10.0 + top), Vec3::Z).unwrap();
+        let disc = Region2 { outer: Loop2::circle_from(Vec2::ZERO, r_top, 0.613), holes: vec![] };
+        extrude_tapered(&plane, &disc, (r_top - r * 0.9) / half.tan(), -1.0, -half).unwrap()
+    };
+    let plate = box_solid(Vec3::ZERO, Vec3::new(60.0, 40.0, 10.0)).unwrap();
+    let first = boolean(&plate, &csink(15.0), BoolOp::Cut).unwrap().unwrap();
+    let first = boolean(&first, &cylinder(Vec3::new(15.0, 20.0, -1.0), Vec3::Z, r, 12.0).unwrap(), BoolOp::Cut).unwrap().unwrap();
+    let v0 = measure(&first).unwrap().volume;
+    let fine = |tool: &Body| (first.size().max(tool.size()) * 1e-5).max(1e-6);
+    let refined = |events: &[BooleanFallback], tol: f64| {
+        events.iter().any(|e| e.strategy == BooleanStrategy::RefinedTolerance && (e.tolerance_mm - tol).abs() <= tol * 1e-9)
+    };
+    // Across the part, and clear of it: the earlier cone is out of reach.
+    let (r_end, h) = (r * 0.9, (rc - r * 0.9) / half.tan());
+    let cone = PI * h * (rc * rc + rc * r_end + r_end * r_end) / 3.0;
+    for (x, removed) in [(45.0, cone), (200.0, 0.0)] {
+        let tool = csink(x);
+        let (result, diagnostics) = capture_boolean_diagnostics(|| boolean(&first, &tool, BoolOp::Cut));
+        let v = measure(&result.unwrap().unwrap()).unwrap().volume;
+        assert!((v - (v0 - removed)).abs() < 1e-3, "countersink at x = {x}: {v} vs {}", v0 - removed);
+        assert!(!refined(&diagnostics.events, fine(&tool)), "countersink at x = {x} took the junction's tolerances: {diagnostics:?}");
+    }
+    // Overlapping the earlier countersink's rim: a junction, traced finely as before.
+    let tool = csink(20.5);
+    let (result, diagnostics) = capture_boolean_diagnostics(|| boolean(&first, &tool, BoolOp::Cut));
+    assert!(measure(&result.unwrap().unwrap()).unwrap().volume < v0);
+    assert!(refined(&diagnostics.events, fine(&tool)), "{diagnostics:?}");
+}
