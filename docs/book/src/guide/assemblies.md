@@ -236,6 +236,11 @@ are drawn by the same renderer as `solidcraft-cli snapshot`, on a copy of the de
 changed. A GIF keeps one palette for all its frames, so colours don't flicker, and stores only
 what changed from one frame to the next. Frames are capped: at most 1000, and a GIF holds at most
 2^26 pixels of frames (about 160 frames of 800 × 500).
+An exploded view animates the same way: give its name or id as `view` (instead of a `study` or a
+`joint`) and the parts come apart at a steady pace, from the assembled placement to where the view
+shows them; `back: true` brings them back together, exploded at the middle frame. That takes 41
+frames by default, or 81 with `back`, and the home view frames the parts both assembled and
+exploded. As with `explode.show`, the design keeps its placements.
 
 **Motion analysis.** The **Motion Study** dialog's **Study** box opens a saved study to edit, and
 by its timeline the dialog charts what the study does.
