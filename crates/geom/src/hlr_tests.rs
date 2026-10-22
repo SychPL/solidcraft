@@ -1947,3 +1947,41 @@ fn the_shadow_index_finds_each_nearby_box_once() {
     index.query([-50., -50.], [-40., -40.], &mut near);
     assert!(near.is_empty());
 }
+
+#[test]
+fn a_plane_through_three_points_draws_as_a_plane() {
+    // The box with every face stored as the plane through three of its points draws the same
+    // bits as the box with axis-stored planes.
+    let o = Options::default();
+    let mut through = cuboid([0.; 3], [1.; 3]);
+    for f in &mut through.shells[0].faces {
+        let Surface::Plane { origin, u_axis, v_axis } = f.surface else { panic!("a box face is a plane") };
+        let at = |a: [f64; 3]| [origin[0] + a[0], origin[1] + a[1], origin[2] + a[2]];
+        f.surface = Surface::PlaneThrough { origin, u_point: at(u_axis), v_point: at(v_axis) };
+    }
+    let view = View::new(Vec3::new(-1., -0.8, -0.6), Vec3::new(0., 0., 1.)).unwrap();
+    let draw = |b: &Brep| {
+        let mut d = hidden_lines(&[prepare(b, &o).unwrap()], &[identity(0, [0.; 3])], &view, &o, &never).unwrap();
+        d.stats.phase_ms = [0.; 4];
+        format!("{d:?}")
+    };
+    assert!(draw(&through) == draw(&cuboid([0.; 3], [1.; 3])));
+}
+
+#[test]
+fn procedural_and_placed_records_are_not_supported_yet() {
+    let o = Options::default();
+    // A cylinder side stored as a placed revolution of its seam line.
+    let mut placed = cylinder(4., 10.);
+    let profile = Box::new(Curve::Line { start: [4., 0., 0.], end: [4., 0., 10.] });
+    let matrix = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]];
+    placed.shells[0].faces[0].surface = Surface::PlacedRevolution { profile, origin: [0.; 3], axis: [0., 0., 1.], matrix, forward: true };
+    assert!(matches!(prepare(&placed, &o), Err(HlrError::Unsupported("placed revolution surface"))));
+    // A box edge stored as the meeting of the planes y = 0 and z = 0, traced from a leader.
+    let mut traced = cuboid([0.; 3], [1.; 3]);
+    let y0 = Box::new(Surface::Plane { origin: [0.; 3], u_axis: [1., 0., 0.], v_axis: [0., 0., 1.] });
+    let z0 = Box::new(Surface::Plane { origin: [0.; 3], u_axis: [1., 0., 0.], v_axis: [0., 1., 0.] });
+    let leader = Box::new(Curve::Polyline { points: vec![[0.; 3], [1., 0., 0.]] });
+    traced.shells[0].edges[0].curve = Curve::SurfaceIntersection { surfaces: [y0, z0], leader, tolerance: 1e-6 };
+    assert!(matches!(prepare(&traced, &o), Err(HlrError::Unsupported("surface intersection curve"))));
+}

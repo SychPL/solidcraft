@@ -204,6 +204,7 @@ pub fn prepare(b: &Brep, opts: &Options) -> Result<Prepared, HlrError> {
                 crate::brep::Curve::Spline { .. } => "spline",
                 crate::brep::Curve::RationalSpline { .. } => "rational_spline",
                 crate::brep::Curve::Intersection { .. } => "intersection",
+                crate::brep::Curve::SurfaceIntersection { .. } => "surface_intersection",
             };
             let shape = if matches!(c, C3::Line { .. }) {
                 "line"
@@ -351,7 +352,11 @@ fn anchor(b: &Brep) -> Vec3 {
             .iter()
             .flat_map(|s| s.faces.iter())
             .filter_map(|f| match &f.surface {
-                Surface::Plane { origin, .. } | Surface::Revolution { origin, .. } => Some(v3(origin)),
+                Surface::Plane { origin, .. } | Surface::PlaneThrough { origin, .. } | Surface::Revolution { origin, .. } => Some(v3(origin)),
+                Surface::PlacedRevolution { origin, matrix: [x, y, z, w], .. } => {
+                    let column = |c: &[f64; 4]| Vec3::new(c[0], c[1], c[2]);
+                    Some(column(x) * origin[0] + column(y) * origin[1] + column(z) * origin[2] + column(w))
+                }
                 Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } | Surface::Sphere { frame, .. } | Surface::Torus { frame, .. } => {
                     Some(v3(&frame.origin))
                 }
@@ -392,26 +397,34 @@ fn shifted(b: &Brep, d: Vec3) -> Brep {
                 points.iter_mut().for_each(|p| point(p, d))
             }
             Curve::RationalSpline { homogeneous, .. } => homogeneous.iter_mut().for_each(|h| weighted(h, d)),
+            Curve::SurfaceIntersection { surfaces, leader, .. } => {
+                surfaces.iter_mut().for_each(|s| surface(s, d));
+                curve(leader, d);
+            }
+        }
+    }
+    fn surface(s: &mut Surface, d: Vec3) {
+        match s {
+            Surface::Plane { origin, .. } => point(origin, d),
+            Surface::PlaneThrough { origin, u_point, v_point } => [origin, u_point, v_point].into_iter().for_each(|p| point(p, d)),
+            Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } | Surface::Sphere { frame, .. } | Surface::Torus { frame, .. } => {
+                point(&mut frame.origin, d)
+            }
+            Surface::Spline { points, .. } => points.iter_mut().flatten().for_each(|p| point(p, d)),
+            Surface::RationalSpline { homogeneous, .. } => homogeneous.iter_mut().flatten().for_each(|h| weighted(h, d)),
+            Surface::Revolution { profile, origin, .. } => {
+                curve(profile, d);
+                point(origin, d);
+            }
+            // The placement's last column carries its translation (and the homogeneous weight).
+            Surface::PlacedRevolution { matrix: [.., w], .. } => weighted(w, d),
         }
     }
     let mut out = b.clone();
     for s in &mut out.shells {
         s.vertices.iter_mut().for_each(|p| point(p, d));
         s.edges.iter_mut().for_each(|e| curve(&mut e.curve, d));
-        for f in &mut s.faces {
-            match &mut f.surface {
-                Surface::Plane { origin, .. } => point(origin, d),
-                Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } | Surface::Sphere { frame, .. } | Surface::Torus { frame, .. } => {
-                    point(&mut frame.origin, d)
-                }
-                Surface::Spline { points, .. } => points.iter_mut().flatten().for_each(|p| point(p, d)),
-                Surface::RationalSpline { homogeneous, .. } => homogeneous.iter_mut().flatten().for_each(|h| weighted(h, d)),
-                Surface::Revolution { profile, origin, .. } => {
-                    curve(profile, d);
-                    point(origin, d);
-                }
-            }
-        }
+        s.faces.iter_mut().for_each(|f| surface(&mut f.surface, d));
     }
     out
 }

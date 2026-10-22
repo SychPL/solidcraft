@@ -122,7 +122,11 @@ in the W05a findings.
   ray leaves one of them.
 - Not in this slice: parallel per-curve work and the shared work limits of
   `geom::section`, the kernel adapter (after W02), perspective, section regions (W03),
-  views and commands (W07), and mirrored placements.
+  views and commands (W07), and mirrored placements. Of the records the kernel now saves,
+  planes through three points (`PlaneThrough`) are drawn as planes; a body with a procedural
+  `SurfaceIntersection` curve or a `PlacedRevolution` surface (whose placement may scale it
+  unevenly) is refused by `prepare` with `HlrError::Unsupported` until the adapter handles
+  them.
 
 ## Fixtures
 
@@ -165,6 +169,9 @@ and intervals:
 - two touching boxes draw each shared edge once;
 - mirrored placements, bad body indices and bad views are refused; cancellation and
   budgets return errors;
+- a box stored with planes through three points draws the same bits as one with
+  axis-stored planes; placed revolutions and procedural intersection curves are refused as
+  not supported yet;
 - torus ray roots for thin, large and nearly tangent cases, and torus silhouettes near
   the axis direction.
 

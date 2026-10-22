@@ -123,6 +123,15 @@ impl S3 {
                 let n = u.cross(v).normalized().ok_or(HlrError::Unsupported("degenerate plane"))?;
                 S3::Plane { o: v3(*origin), u, v, n }
             }
+            // The plane through three points: parameter (1, 0) at `u_point`, (0, 1) at `v_point`.
+            Surface::PlaneThrough { origin, u_point, v_point } => {
+                let o = v3(*origin);
+                let (u, v) = (v3(*u_point) - o, v3(*v_point) - o);
+                let n = u.cross(v).normalized().ok_or(HlrError::Unsupported("degenerate plane"))?;
+                S3::Plane { o, u, v, n }
+            }
+            // A revolution mapped by an affine placement, which may scale it unevenly.
+            Surface::PlacedRevolution { .. } => return Err(HlrError::Unsupported("placed revolution surface")),
             Surface::Spline { u_knots, v_knots, points } => {
                 let h = points.iter().map(|r| r.iter().map(|p| [p[0], p[1], p[2], 1.]).collect()).collect::<Vec<Vec<_>>>();
                 S3::Nurbs(Box::new(Nurbs::new(u_knots, v_knots, &h)?))
