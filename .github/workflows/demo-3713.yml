@@ -1,28 +1,19 @@
-# Fork-only: renders the #3713 demo GIF on a GitHub-hosted runner (never upstream).
-name: Demo 3713 (fork only)
+# Fork-only: the #3713 gates the fork CI run did not cover, on a GitHub-hosted runner (never upstream).
+name: Gates 3713 (fork only)
 on:
   push:
     branches: [fork-demo-3713]
 permissions:
   contents: read
 jobs:
-  demo:
+  gates:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build the CLI
-        run: cargo build --release --locked -p solidcraft-cli
-      - name: Export the exploded view animation
-        run: |
-          mkdir -p demo
-          cp .github/demo-3713/pod.json demo/
-          cd demo
-          ../target/release/solidcraft-cli run pod.json --out pod.solidcraft > run.log 2>&1
-          grep -n '"renderer"\|"frames"\|"bytes"\|warning' run.log || true
-          ls -la
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pod-explode
-          path: demo/
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask layers
+      - run: cargo xtask lists
+      - run: cargo xtask wasm
