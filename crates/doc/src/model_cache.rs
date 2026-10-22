@@ -529,7 +529,8 @@ impl Model {
             }
             let ms = r.get("ms").and_then(Json::as_f64).filter(|ms| ms.is_finite()).ok_or_else(|| bad("saved model: time"))?;
             // A file without room for every state keeps some features without one (#3220).
-            let state = r.get("state").map(|s| states.get(index(Some(s), states.len())?).cloned().ok_or_else(|| bad("saved model: state"))).transpose()?;
+            let state =
+                r.get("state").map(|s| states.get(index(Some(s), states.len())?).cloned().ok_or_else(|| bad("saved model: state"))).transpose()?;
             let result = FeatureResult {
                 id: f.id,
                 name: f.name.clone(),

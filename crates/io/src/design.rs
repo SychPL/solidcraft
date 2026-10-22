@@ -894,10 +894,12 @@ mod tests {
         let records: Vec<Value> = (0..40)
             .map(|i| json!({"name": format!("Body{i}"), "feature": 1 + i / 8, "component": 0, "key": "0000000000000001", "names": 0, "body": i}))
             .collect();
+        // As runs of consecutive bodies, which the first state's two groups make one of.
         let states: Vec<Value> = (0..4)
             .map(|i| {
+                let bodies = if i == 0 { json!([[0, 16]]) } else { json!([[0, 8], [8 * (i + 1), 8]]) };
                 json!({
-                    "bodies": [[0, 8], [8 * (i + 1), 8]], "sketches": [], "body_counter": 7, "sheets": [], "construct": [], "threads": [],
+                    "bodies": bodies, "sketches": [], "body_counter": 7, "sheets": [], "construct": [], "threads": [],
                     "sketch_keys": [], "blend_edges": {}, "fitted": {}, "tapered": {},
                 })
             })
@@ -937,7 +939,10 @@ mod tests {
             assert_eq!(kept, (0..16).chain(32..40).collect::<Vec<_>>());
             assert_eq!(two.records["model_bodies"].as_array().unwrap().len(), 24);
             let last = two.final_state().unwrap();
-            assert_eq!(last.bodies.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), (0..8).chain(32..40).map(|i| format!("Body{i}")).collect::<Vec<_>>());
+            assert_eq!(
+                last.bodies.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(),
+                (0..8).chain(32..40).map(|i| format!("Body{i}")).collect::<Vec<_>>()
+            );
             assert_eq!(last.body_counter, 7);
         }
         assert_eq!(thinned(32).unwrap().0, vec![false, true, true, true]);
@@ -946,10 +951,13 @@ mod tests {
             let (states, kept, one) = thinned(budget).unwrap();
             assert_eq!(states, vec![false, false, false, true], "{budget} bytes");
             assert_eq!(kept, (0..8).chain(32..40).collect::<Vec<_>>());
-            assert_eq!(one.records["states"], json!([{
-                "bodies": [[0, 16]], "sketches": [], "body_counter": 7, "sheets": [], "construct": [], "threads": [],
-                "sketch_keys": [], "blend_edges": {}, "fitted": {}, "tapered": {},
-            }]));
+            assert_eq!(
+                one.records["states"],
+                json!([{
+                    "bodies": [[0, 16]], "sketches": [], "body_counter": 7, "sheets": [], "construct": [], "threads": [],
+                    "sketch_keys": [], "blend_edges": {}, "fitted": {}, "tapered": {},
+                }])
+            );
         }
         assert!(thinned(15).is_none());
     }
