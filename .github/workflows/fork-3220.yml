@@ -20,8 +20,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: Format
-        run: cargo fmt --all -- --check
       - name: Clippy (doc, io, cli)
         run: cargo clippy -p solidcraft-doc -p solidcraft-io -p solidcraft-cli --all-targets --profile ci --locked -- -D warnings
       - name: Container tests
@@ -33,6 +31,9 @@ jobs:
           cargo xtask layers
           cargo xtask lists
           bash scripts/test-format-pending.sh
+      - name: Format
+        if: always()
+        run: cargo fmt --all -- --check
   bench:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
