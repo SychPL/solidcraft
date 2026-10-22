@@ -1,0 +1,35 @@
+# Fork-only: renders the #3330 before/after pictures on a GitHub-hosted runner (never upstream).
+name: Demo 3330 (fork only)
+on:
+  push:
+    branches: [fork-demo-3330]
+permissions:
+  contents: read
+jobs:
+  demo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-shared
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tangency-labs/solidcraft
+          ref: main
+          path: upstream-main
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Before (main)
+        run: |
+          (cd upstream-main && cargo build --release --locked -p solidcraft-cli)
+          cp target-shared/release/solidcraft-cli cli-main
+          bash .github/demo-3330/run.sh "$PWD/cli-main" demo/before
+      - name: After (this branch)
+        run: |
+          cargo build --release --locked -p solidcraft-cli
+          bash .github/demo-3330/run.sh "$PWD/target-shared/release/solidcraft-cli" demo/after
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: demo-3330
+          path: demo/

@@ -1,0 +1,5 @@
+{"commands": [
+ {"command": "parameters.add", "params": {"name": "hx", "expression": "10 mm"}},
+ {"command": "solid.box", "params": {"length": 60, "width": 40, "height": 5, "corner": [-30, -20, 0], "operation": "new", "body_name": "Plate"}},
+ {"command": "solid.cylinder", "params": {"diameter": 6, "height": 7, "base": ["hx", 0, -1], "operation": "cut", "name": "Hole"}}
+]}
