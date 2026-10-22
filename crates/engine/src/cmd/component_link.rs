@@ -157,8 +157,7 @@ fn session_bodies(part: &Session, shown: &str) -> Result<(String, solidcraft_io:
     }
     // The STEP text keeps no face names: carry the design's own, so references into the linked
     // bodies follow them as they do inside the design (#3330).
-    let imported: Vec<solidcraft_kernel::Body> = feature.import.bodies.iter().map(|b| b.body.clone()).collect();
-    let faces = solidcraft_doc::naming::carried_face_names(&world, &imported);
+    let faces = solidcraft_doc::naming::carried_face_names(&world, &feature.import.bodies);
     Ok((name, feature, faces))
 }
 
@@ -252,10 +251,14 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
         let (_, sf, faces) = linked_bodies(&file, s.path.as_deref()).map_err(|e| bad(cmd, format!("{cname}: {e}")))?;
         warnings.extend(sf.warnings.iter().cloned());
         let same = matches!(&sf.kind, FeatureKind::Import { step, .. } if *step == old);
-        if same && s.doc.feature(link.feature).is_some_and(|f| f.link_faces == faces) {
+        let kept = s.doc.feature(link.feature).map(|f| &f.link_faces);
+        if same && kept == Some(&faces) {
             unchanged.push(cname);
             continue;
         }
+        // The same bodies, their faces named for the first time (a link made before names were
+        // kept): nothing a reference finds changes. Names the design gave other faces since do.
+        let changed = !same || kept.is_some_and(|k| !k.is_empty());
         if !same {
             for name in numbered_references(s, comp, link.feature) {
                 warnings.push(format!(
@@ -274,7 +277,7 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
             // A link made before the design's face names were kept gets them here.
             f.link_faces = faces;
         }
-        if same { unchanged.push(cname) } else { updated.push(cname) }
+        if changed { updated.push(cname) } else { unchanged.push(cname) }
     }
     s.refresh();
     if let Some(e) = s.doc.links.values().find_map(|l| s.model.result(l.feature).and_then(|r| r.error.clone())) {
