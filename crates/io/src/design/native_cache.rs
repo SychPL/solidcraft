@@ -5,7 +5,7 @@
 use super::*;
 use solidcraft_doc::{ModelState, SavedModel};
 
-const FORMAT: &str = "solidcraft-model-cache/2";
+const FORMAT: &str = "solidcraft-model-cache/3";
 const PRODUCER: &str = "solidcraft-truck-adapter/3";
 const MANIFEST: &str = "cache/model.json";
 const PAYLOAD: &str = "cache/bodies.bin";
@@ -26,61 +26,172 @@ fn matrix(t: &[[f64; 4]; 4]) -> Vec<f64> {
     t.iter().flatten().copied().collect()
 }
 
-/// Encode a saved model. Identical bodies (the same part placed many times) are stored once; a
-/// placed copy of a part records the part and its matrix, so it shows that part's display as it
-/// did before saving.
-pub(super) fn encode_model(model: &SavedModel, document: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-    if model.bodies.is_empty() || model.bodies.len() > MAX_RECORDS {
-        return Err(invalid("cached body count"));
+/// Encode a saved model in `space` bytes (manifest and payload together). Identical bodies (the
+/// same part placed many times) are stored once; a placed copy of a part records the part and its
+/// matrix, so it shows that part's display as it did before saving. A model too big for `space`
+/// keeps fewer states, then its final state only ([`SavedModel::thinned`], #3220); an error when
+/// not even that fits.
+pub(super) fn encode_model(model: &SavedModel, document: &[u8], space: usize) -> Result<(Vec<u8>, Vec<u8>)> {
+    let encoded = Encoded::of(model)?;
+    let fits = |manifest: &[u8], payload: usize| manifest.len() <= MAX_MANIFEST && manifest.len().saturating_add(payload) <= space;
+    if encoded.data.len() <= space {
+        let every: Vec<usize> = (0..model.bodies.len()).collect();
+        match encoded.cache(&model.records, &every, document) {
+            Ok((manifest, None)) if fits(&manifest, encoded.data.len()) => return Ok((manifest, encoded.data)),
+            Ok((manifest, Some(data))) if fits(&manifest, data.len()) => return Ok((manifest, data)),
+            _ => {}
+        }
     }
-    // What to encode: every body, and the part every placed copy shows.
-    let mut shares: Vec<solidcraft_kernel::DisplayShare> = Vec::new();
-    let mut share_index = std::collections::HashMap::new();
-    for b in &model.bodies {
-        if let Some((share, _)) = b.display_share() {
-            share_index.entry(share.id()).or_insert_with(|| {
-                shares.push(share.clone());
-                shares.len() - 1
+    // Fewer states. The bodies are encoded already: a state costs the slices it adds.
+    let size = |s: &usize| encoded.slices.get(*s).map_or(0, |r| r.len());
+    let pieces: Vec<Vec<(usize, usize)>> = encoded
+        .bodies
+        .iter()
+        .map(|(s, placed)| std::iter::once(s).chain(placed.as_ref().and_then(|(part, _)| encoded.parts.get(*part))).map(|s| (*s, size(s))).collect())
+        .collect();
+    let mut budget = space.min(MAX_DESIGN_BYTES);
+    for _ in 0..16 {
+        let Some((thin, kept)) = model.thinned(&pieces, budget) else { break };
+        let Ok((manifest, data)) = encoded.cache(&thin.records, &kept, document) else {
+            budget /= 2;
+            continue;
+        };
+        let payload = data.as_ref().map_or(encoded.data.len(), Vec::len);
+        if fits(&manifest, payload) {
+            let data = data.unwrap_or_else(|| encoded.data.clone());
+            let features = thin.records.get("features").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+            log::info!(
+                "the model cache ({} MB) does not fit the design file: saved the states of {} of {} features ({} MB), opening evaluates the others again",
+                encoded.data.len() >> 20,
+                features.iter().filter(|f| f.get("state").is_some()).count(),
+                features.len(),
+                manifest.len().saturating_add(data.len()) >> 20
+            );
+            return Ok((manifest, data));
+        }
+        // The records took the room: as much less for the bodies (fewer states keep fewer records).
+        budget = if manifest.len() > MAX_MANIFEST { payload / 2 } else { space.saturating_sub(manifest.len()).min(payload.saturating_sub(1)) };
+    }
+    log::info!("the model cache ({} MB) does not fit the design file: saved without it", encoded.data.len() >> 20);
+    Err(invalid("model cache size"))
+}
+
+/// A model's bodies, each encoded once and identical ones stored once (keyed by the SHA-256 of
+/// their encoding), in the order a cache of the whole model stores them: every body, then the part
+/// every placed copy shows.
+struct Encoded {
+    data: Vec<u8>,
+    /// Where each stored body is in `data`.
+    slices: Vec<std::ops::Range<usize>>,
+    /// Each model body's slice, with the part (its index in `parts`) and the matrix of a placed copy.
+    bodies: Vec<(usize, Option<(usize, [[f64; 4]; 4])>)>,
+    /// Each placed part's slice.
+    parts: Vec<usize>,
+}
+
+impl Encoded {
+    fn of(model: &SavedModel) -> Result<Self> {
+        // What to encode: every body, and the part every placed copy shows.
+        let mut shares: Vec<solidcraft_kernel::DisplayShare> = Vec::new();
+        let mut share_index = std::collections::HashMap::new();
+        let mut placed = Vec::with_capacity(model.bodies.len());
+        for b in &model.bodies {
+            placed.push(b.display_share().map(|(share, t)| {
+                let part = *share_index.entry(share.id()).or_insert_with(|| {
+                    shares.push(share.clone());
+                    shares.len() - 1
+                });
+                (part, t)
+            }));
+        }
+        let bodies: Vec<&solidcraft_kernel::Body> = model.bodies.iter().chain(shares.iter().map(|s| s.original())).collect();
+        let encoded = solidcraft_kernel::map_on_threads(&bodies, 16, |b| solidcraft_kernel::encode_native_body(b).ok());
+        let mut data = Vec::new();
+        let mut slices = Vec::new();
+        let mut by_digest = std::collections::HashMap::new();
+        let mut index = Vec::with_capacity(encoded.len());
+        for bytes in encoded {
+            let bytes = bytes.flatten().ok_or_else(|| invalid("body not stored exactly"))?;
+            let next = slices.len();
+            let i = *by_digest.entry(Sha256::digest(&bytes)).or_insert(next);
+            if i == next {
+                let end = data.len().checked_add(bytes.len()).ok_or_else(|| invalid("model cache size"))?;
+                slices.push(data.len()..end);
+                data.extend(bytes);
+            }
+            index.push(i);
+        }
+        let (body_slices, part_slices) = index.split_at_checked(model.bodies.len()).ok_or_else(|| invalid("cached body count"))?;
+        Ok(Encoded { data, slices, bodies: body_slices.iter().copied().zip(placed).collect(), parts: part_slices.to_vec() })
+    }
+
+    /// The cache of a model with these `records`, whose bodies are these of the model's (indices
+    /// here): its manifest, and its payload, `None` when that is all of `self.data` (as for the
+    /// whole model). Refused when it holds too many bodies or its payload is too large.
+    fn cache(&self, records: &Value, bodies: &[usize], document: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        if bodies.is_empty() || bodies.len() > MAX_RECORDS {
+            return Err(invalid("cached body count"));
+        }
+        // The slices stored, in the order first needed: the bodies', then their parts'.
+        let mut order = Vec::new();
+        let mut renumbered = vec![None; self.slices.len()];
+        let mut slice = |s: usize| -> Result<usize> {
+            let n = renumbered.get_mut(s).ok_or_else(|| invalid("cached body"))?;
+            Ok(*n.get_or_insert_with(|| {
+                order.push(s);
+                order.len() - 1
+            }))
+        };
+        let mut parts = Vec::new();
+        let mut part_index = vec![None; self.parts.len()];
+        let mut table = Vec::with_capacity(bodies.len());
+        for &b in bodies {
+            let (s, placed) = self.bodies.get(b).ok_or_else(|| invalid("cached body"))?;
+            let s = slice(*s)?;
+            table.push(match placed {
+                Some((part, t)) => {
+                    let p = *part_index.get_mut(*part).ok_or_else(|| invalid("display share"))?.get_or_insert_with(|| {
+                        parts.push(*part);
+                        parts.len() - 1
+                    });
+                    json!([s, p, matrix(t)])
+                }
+                None => json!([s]),
             });
         }
-    }
-    let bodies: Vec<&solidcraft_kernel::Body> = model.bodies.iter().chain(shares.iter().map(|s| s.original())).collect();
-    let encoded = solidcraft_kernel::map_on_threads(&bodies, 16, |b| solidcraft_kernel::encode_native_body(b).ok());
-    let mut data = Vec::new();
-    let mut slices = Vec::new();
-    let mut by_digest = std::collections::HashMap::new();
-    let mut index = Vec::with_capacity(encoded.len());
-    for bytes in encoded {
-        let bytes = bytes.flatten().ok_or_else(|| invalid("body not stored exactly"))?;
-        let next = slices.len();
-        let i = *by_digest.entry(Sha256::digest(&bytes)).or_insert(next);
-        if i == next {
-            if data.len().saturating_add(bytes.len()) > MAX_DESIGN_BYTES || slices.len() >= MAX_UNIQUE {
-                return Err(invalid("model cache size"));
-            }
-            slices.push(json!([data.len(), bytes.len()]));
-            data.extend(bytes);
+        let shares = parts.iter().map(|p| slice(*self.parts.get(*p).ok_or_else(|| invalid("display share"))?)).collect::<Result<Vec<_>>>()?;
+        let ranges = order.iter().map(|s| self.slices.get(*s).cloned().ok_or_else(|| invalid("cached body"))).collect::<Result<Vec<_>>>()?;
+        let length = ranges.iter().fold(0usize, |n, r| n.saturating_add(r.len()));
+        if length > MAX_DESIGN_BYTES || ranges.len() > MAX_UNIQUE {
+            return Err(invalid("model cache size"));
         }
-        index.push(i);
+        let data = if order.iter().copied().eq(0..self.slices.len()) {
+            None
+        } else {
+            let mut data = Vec::with_capacity(length);
+            for r in &ranges {
+                data.extend_from_slice(self.data.get(r.clone()).ok_or_else(|| invalid("cached body"))?);
+            }
+            Some(data)
+        };
+        let payload = data.as_deref().unwrap_or(&self.data);
+        let mut offset = 0usize;
+        let slices: Vec<Value> = ranges
+            .iter()
+            .map(|r| {
+                let slice = json!([offset, r.len()]);
+                offset = offset.saturating_add(r.len());
+                slice
+            })
+            .collect();
+        let manifest = serde_json::to_vec(&json!({
+            "format": FORMAT, "producer": PRODUCER, "app": env!("CARGO_PKG_VERSION"), "build": build(),
+            "document": digest(document), "payload": digest(payload),
+            "slices": slices, "shares": shares, "bodies": table, "model": records,
+        }))
+        .map_err(invalid)?;
+        Ok((manifest, data))
     }
-    let (body_index, share_body) = index.split_at(model.bodies.len());
-    let mut table = Vec::with_capacity(model.bodies.len());
-    for (b, i) in model.bodies.iter().zip(body_index) {
-        table.push(match b.display_share() {
-            Some((share, t)) => json!([i, share_index.get(&share.id()).ok_or_else(|| invalid("display share"))?, matrix(&t)]),
-            None => json!([i]),
-        });
-    }
-    let manifest = serde_json::to_vec(&json!({
-        "format": FORMAT, "producer": PRODUCER, "app": env!("CARGO_PKG_VERSION"), "build": build(),
-        "document": digest(document), "payload": digest(&data),
-        "slices": slices, "shares": share_body, "bodies": table, "model": model.records,
-    }))
-    .map_err(invalid)?;
-    if manifest.len() > MAX_MANIFEST {
-        return Err(invalid("model cache manifest size"));
-    }
-    Ok((manifest, data))
 }
 
 /// The final state of the model a design keeps, when this build computed it for exactly this
