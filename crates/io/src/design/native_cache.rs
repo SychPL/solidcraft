@@ -33,17 +33,18 @@ fn matrix(t: &[[f64; 4]; 4]) -> Vec<f64> {
 /// not even that fits.
 pub(super) fn encode_model(model: &SavedModel, document: &[u8], space: usize) -> Result<(Vec<u8>, Vec<u8>)> {
     let encoded = Encoded::of(model)?;
-    let fits = |manifest: &[u8], payload: usize| manifest.len() <= MAX_MANIFEST && manifest.len().saturating_add(payload) <= space;
-    if encoded.data.len() <= space {
+    let total = encoded.slices.iter().fold(0usize, |n, s| n.saturating_add(s.len()));
+    let fits = |manifest: &[u8], payload: &[u8]| manifest.len() <= MAX_MANIFEST && manifest.len().saturating_add(payload.len()) <= space;
+    if total <= space {
         let every: Vec<usize> = (0..model.bodies.len()).collect();
-        match encoded.cache(&model.records, &every, document) {
-            Ok((manifest, None)) if fits(&manifest, encoded.data.len()) => return Ok((manifest, encoded.data)),
-            Ok((manifest, Some(data))) if fits(&manifest, data.len()) => return Ok((manifest, data)),
-            _ => {}
+        if let Ok((manifest, data)) = encoded.cache(&model.records, &every, document)
+            && fits(&manifest, &data)
+        {
+            return Ok((manifest, data));
         }
     }
     // Fewer states. The bodies are encoded already: a state costs the slices it adds.
-    let size = |s: &usize| encoded.slices.get(*s).map_or(0, |r| r.len());
+    let size = |s: &usize| encoded.slices.get(*s).map_or(0, Vec::len);
     let pieces: Vec<Vec<(usize, usize)>> = encoded
         .bodies
         .iter()
@@ -56,13 +57,11 @@ pub(super) fn encode_model(model: &SavedModel, document: &[u8], space: usize) ->
             budget /= 2;
             continue;
         };
-        let payload = data.as_ref().map_or(encoded.data.len(), Vec::len);
-        if fits(&manifest, payload) {
-            let data = data.unwrap_or_else(|| encoded.data.clone());
+        if fits(&manifest, &data) {
             let features = thin.records.get("features").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
             log::info!(
                 "the model cache ({} MB) does not fit the design file: saved the states of {} of {} features ({} MB), opening evaluates the others again",
-                encoded.data.len() >> 20,
+                total >> 20,
                 features.iter().filter(|f| f.get("state").is_some()).count(),
                 features.len(),
                 manifest.len().saturating_add(data.len()) >> 20
@@ -70,9 +69,9 @@ pub(super) fn encode_model(model: &SavedModel, document: &[u8], space: usize) ->
             return Ok((manifest, data));
         }
         // The records took the room: as much less for the bodies (fewer states keep fewer records).
-        budget = if manifest.len() > MAX_MANIFEST { payload / 2 } else { space.saturating_sub(manifest.len()).min(payload.saturating_sub(1)) };
+        budget = if manifest.len() > MAX_MANIFEST { data.len() / 2 } else { space.saturating_sub(manifest.len()).min(data.len().saturating_sub(1)) };
     }
-    log::info!("the model cache ({} MB) does not fit the design file: saved without it", encoded.data.len() >> 20);
+    log::info!("the model cache ({} MB) does not fit the design file: saved without it", total >> 20);
     Err(invalid("model cache size"))
 }
 
@@ -80,9 +79,8 @@ pub(super) fn encode_model(model: &SavedModel, document: &[u8], space: usize) ->
 /// their encoding), in the order a cache of the whole model stores them: every body, then the part
 /// every placed copy shows.
 struct Encoded {
-    data: Vec<u8>,
-    /// Where each stored body is in `data`.
-    slices: Vec<std::ops::Range<usize>>,
+    /// Each stored body's encoding (kept apart: only what a cache keeps is copied into its payload).
+    slices: Vec<Vec<u8>>,
     /// Each model body's slice, with the part (its index in `parts`) and the matrix of a placed copy.
     bodies: Vec<(usize, Option<(usize, [[f64; 4]; 4])>)>,
     /// Each placed part's slice.
@@ -106,7 +104,6 @@ impl Encoded {
         }
         let bodies: Vec<&solidcraft_kernel::Body> = model.bodies.iter().chain(shares.iter().map(|s| s.original())).collect();
         let encoded = solidcraft_kernel::map_on_threads(&bodies, 16, |b| solidcraft_kernel::encode_native_body(b).ok());
-        let mut data = Vec::new();
         let mut slices = Vec::new();
         let mut by_digest = std::collections::HashMap::new();
         let mut index = Vec::with_capacity(encoded.len());
@@ -115,20 +112,18 @@ impl Encoded {
             let next = slices.len();
             let i = *by_digest.entry(Sha256::digest(&bytes)).or_insert(next);
             if i == next {
-                let end = data.len().checked_add(bytes.len()).ok_or_else(|| invalid("model cache size"))?;
-                slices.push(data.len()..end);
-                data.extend(bytes);
+                slices.push(bytes);
             }
             index.push(i);
         }
         let (body_slices, part_slices) = index.split_at_checked(model.bodies.len()).ok_or_else(|| invalid("cached body count"))?;
-        Ok(Encoded { data, slices, bodies: body_slices.iter().copied().zip(placed).collect(), parts: part_slices.to_vec() })
+        Ok(Encoded { slices, bodies: body_slices.iter().copied().zip(placed).collect(), parts: part_slices.to_vec() })
     }
 
     /// The cache of a model with these `records`, whose bodies are these of the model's (indices
-    /// here): its manifest, and its payload, `None` when that is all of `self.data` (as for the
-    /// whole model). Refused when it holds too many bodies or its payload is too large.
-    fn cache(&self, records: &Value, bodies: &[usize], document: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    /// here): its manifest and payload. Refused when it holds too many bodies or its payload is
+    /// too large.
+    fn cache(&self, records: &Value, bodies: &[usize], document: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         if bodies.is_empty() || bodies.len() > MAX_RECORDS {
             return Err(invalid("cached body count"));
         }
@@ -160,33 +155,20 @@ impl Encoded {
             });
         }
         let shares = parts.iter().map(|p| slice(*self.parts.get(*p).ok_or_else(|| invalid("display share"))?)).collect::<Result<Vec<_>>>()?;
-        let ranges = order.iter().map(|s| self.slices.get(*s).cloned().ok_or_else(|| invalid("cached body"))).collect::<Result<Vec<_>>>()?;
-        let length = ranges.iter().fold(0usize, |n, r| n.saturating_add(r.len()));
-        if length > MAX_DESIGN_BYTES || ranges.len() > MAX_UNIQUE {
+        let stored = order.iter().map(|s| self.slices.get(*s).ok_or_else(|| invalid("cached body"))).collect::<Result<Vec<_>>>()?;
+        let length = stored.iter().fold(0usize, |n, bytes| n.saturating_add(bytes.len()));
+        if length > MAX_DESIGN_BYTES || stored.len() > MAX_UNIQUE {
             return Err(invalid("model cache size"));
         }
-        let data = if order.iter().copied().eq(0..self.slices.len()) {
-            None
-        } else {
-            let mut data = Vec::with_capacity(length);
-            for r in &ranges {
-                data.extend_from_slice(self.data.get(r.clone()).ok_or_else(|| invalid("cached body"))?);
-            }
-            Some(data)
-        };
-        let payload = data.as_deref().unwrap_or(&self.data);
-        let mut offset = 0usize;
-        let slices: Vec<Value> = ranges
-            .iter()
-            .map(|r| {
-                let slice = json!([offset, r.len()]);
-                offset = offset.saturating_add(r.len());
-                slice
-            })
-            .collect();
+        let mut data = Vec::with_capacity(length);
+        let mut slices = Vec::with_capacity(stored.len());
+        for bytes in stored {
+            slices.push(json!([data.len(), bytes.len()]));
+            data.extend_from_slice(bytes);
+        }
         let manifest = serde_json::to_vec(&json!({
             "format": FORMAT, "producer": PRODUCER, "app": env!("CARGO_PKG_VERSION"), "build": build(),
-            "document": digest(document), "payload": digest(payload),
+            "document": digest(document), "payload": digest(&data),
             "slices": slices, "shares": shares, "bodies": table, "model": records,
         }))
         .map_err(invalid)?;
