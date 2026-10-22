@@ -1,0 +1,9 @@
+{"commands": [
+ {"command": "component.insert_design", "params": {"path": "plate.solidcraft", "name": "Plate"}},
+ {"command": "occurrence.ground", "params": {"occurrence": "Plate:1", "grounded": true}},
+ {"command": "solid.cylinder", "params": {"diameter": 6, "height": 20, "base": [0, 50, 0], "operation": "new", "body_name": "PinBody"}},
+ {"command": "component.create", "params": {"name": "Pin", "parent": "root", "activate": false}},
+ {"command": "component.move_bodies", "params": {"bodies": ["PinBody"], "component": "Pin"}},
+ {"command": "joint.create", "params": {"type": "rigid", "name": "PinInHole", "flip": true, "a": {"occurrence": "Plate:1", "circle": [13, 0, 5]}, "b": {"occurrence": "Pin:1", "circle": [3, 50, 0]}}},
+ {"command": "joint.list", "params": {}}
+]}

@@ -1,0 +1,6 @@
+{"commands": [
+ {"command": "timeline.rollback", "params": {"position": 1}},
+ {"command": "solid.cylinder", "params": {"diameter": 6, "height": 7, "base": [-10, 0, -1], "operation": "cut", "name": "Hole0"}},
+ {"command": "timeline.rollback", "params": {}},
+ {"command": "parameters.change", "params": {"name": "hx", "expression": "20 mm"}}
+]}
