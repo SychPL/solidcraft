@@ -40,7 +40,9 @@ fn reopen_times() {
     }
     let dir = std::env::temp_dir();
     for (name, model) in &cases {
-        let bytes = solidcraft_engine::io::write_design_container_with_cache(&design, solidcraft_engine::io::DesignCompression::Fast, None, model.as_ref()).unwrap();
+        let bytes =
+            solidcraft_engine::io::write_design_container_with_cache(&design, solidcraft_engine::io::DesignCompression::Fast, None, model.as_ref())
+                .unwrap();
         let path = dir.join(format!("reopen-{}.solidcraft", name.split(' ').next().unwrap_or("x").replace('%', "pct")));
         std::fs::write(&path, &bytes).unwrap();
         let kept = model.as_ref().map_or(0, |m| m.records["features"].as_array().unwrap().iter().filter(|f| f.get("state").is_some()).count());
@@ -48,7 +50,8 @@ fn reopen_times() {
         let mut recomputed = 0;
         for _ in 0..3 {
             let t = Instant::now();
-            let (doc, saved) = solidcraft_engine::io::read_design_file(path.to_str().unwrap(), None::<fn(solidcraft_engine::io::DesignPreview)>).unwrap();
+            let (doc, saved) =
+                solidcraft_engine::io::read_design_file(path.to_str().unwrap(), None::<fn(solidcraft_engine::io::DesignPreview)>).unwrap();
             let opened = Session::opened(doc, saved.as_ref());
             times.push(t.elapsed().as_secs_f64() * 1000.0);
             recomputed = opened.model.last_recomputed;
