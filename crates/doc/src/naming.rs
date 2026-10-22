@@ -790,14 +790,15 @@ pub fn face_name_at_body(body: &ModelBody, point: Vec3) -> Option<String> {
 /// `imported` are the bodies read back from the STEP text `part`'s solid bodies were written to
 /// (a linked design), where they stand in it. Each takes the names of the solid of `part` that
 /// most of its faces lie on, face by face: the same geometry, so a point well inside a face lies
-/// on the face it was written from (and on a face of another solid only where two touch).
-pub fn carried_face_names(part: &ModelState, imported: &[solidcraft_kernel::Body]) -> Vec<Vec<String>> {
+/// on the face it was written from (and on a face of another solid only where two touch). Of
+/// solids that hold as many (two alike in one place), the one the file names it after.
+pub fn carried_face_names(part: &ModelState, imported: &[solidcraft_kernel::ImportedBody]) -> Vec<Vec<String>> {
     let solids: Vec<&ModelBody> = part.bodies.iter().filter(|b| !b.body.is_mesh()).collect();
     let indices: Vec<OnceLock<Option<FaceIndex>>> = solids.iter().map(|_| OnceLock::new()).collect();
     imported
         .iter()
-        .map(|body| {
-            let probe = ModelBody::new(String::new(), body.clone(), 0);
+        .map(|read| {
+            let probe = ModelBody::new(String::new(), read.body.clone(), 0);
             let points: Vec<Option<Vec3>> = face_spots(&probe).into_iter().map(|s| s.map(|s| s.point)).collect();
             let best = solids
                 .iter()
@@ -819,7 +820,7 @@ pub fn carried_face_names(part: &ModelState, imported: &[solidcraft_kernel::Body
                     Some((hits.iter().flatten().count(), *b, hits))
                 })
                 .filter(|(n, ..)| *n > 0)
-                .max_by_key(|(n, ..)| *n);
+                .max_by_key(|(n, b, _)| (*n, b.name == read.name));
             let Some((_, b, hits)) = best else { return Vec::new() };
             let names = face_names(b);
             hits.into_iter().map(|h| h.and_then(|i| names.get(i).cloned()).unwrap_or_default()).collect()
