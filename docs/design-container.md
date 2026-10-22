@@ -166,12 +166,14 @@ Decoding runs under `kernel::guard` and is linear in the payload's bytes.
 A model whose cache would push the container past them keeps fewer states
 (`SavedModel::thinned`, #3220): the final state (what the design shows), then the
 other states, the slowest feature's first (the evaluations opening would otherwise
-repeat for longest), each while the bodies it adds still fit. A body is stored
-once however many states hold it, so a state costs only the bodies no state kept
-so far holds. When the records then leave too little room, the bodies get as much
-less and the choice is made again. A feature whose state is left out records none.
-The cache is left out (and the save logs it) only when not even the final state
-fits; a kept-but-thinned cache logs how many features kept their state.
+repeat for longest), each while what it adds still fits: the bodies no state kept
+so far holds (a body is stored once however many states hold it) and the records
+of the state, those bodies, their names and sketches. When the rest of the
+manifest (the bodies' table, the slices) then leaves too little room, the choice
+is made again within that much less, and the final state alone is always tried.
+A feature whose state is left out records none. The cache is left out (and the
+save logs it) only when not even the final state fits; a thinned cache logs how
+many features kept their state.
 
 ### Opening from the model
 
