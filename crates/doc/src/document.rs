@@ -2339,6 +2339,11 @@ pub struct Feature {
     /// mean that numbering.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kernel_piece_order: bool,
+    /// The Import feature of a linked design (Insert Design): the names that design gave the
+    /// faces of its bodies (by body, then face, in the file's order; empty where not known), so
+    /// its faces are named after them and references follow them through Update Links (#3330).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub link_faces: Vec<Vec<String>>,
     #[serde(flatten)]
     pub kind: FeatureKind,
 }
@@ -3041,6 +3046,7 @@ impl Document {
             participants: Vec::new(),
             shell_piece_order: false,
             kernel_piece_order: false,
+            link_faces: Vec::new(),
             kind,
         };
         self.place_feature(f);

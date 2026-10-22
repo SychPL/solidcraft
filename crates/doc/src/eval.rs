@@ -6265,9 +6265,10 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             let imp = kernel::step_import_shared(step)?;
             let digest = crate::config::payload_digest(step);
             let names = import_body_names(st, &f.body_names, &imp, skip);
-            for (b, name) in imp.bodies.iter().zip(names) {
+            for (k, (b, name)) in imp.bodies.iter().zip(names).enumerate() {
                 let Some(name) = name else { continue };
-                let b = crate::lineage::numbered_tool(b.body.clone().with_import_certificate(&digest, f.id)?);
+                let carried = f.link_faces.get(k).map_or(&[][..], Vec::as_slice);
+                let b = crate::lineage::linked_tool(b.body.clone().with_import_certificate(&digest, f.id)?, f.id, carried);
                 st.bodies.push(ModelBody::traced_new(name, b, f.id));
             }
             if !imp.warnings.is_empty() {
