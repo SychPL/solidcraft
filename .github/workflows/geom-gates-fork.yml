@@ -1,0 +1,32 @@
+# Fork only, never part of a pull request: the geom crate's gates on GitHub-hosted runners.
+# Main's CI runs on runners only the upstream organisation has, so its jobs never start on a
+# fork; this checks a scratch branch that carries exactly a PR's head plus this one file.
+name: Geom gates (fork only)
+on:
+  push:
+    branches: ['ci/w06a-*']
+jobs:
+  geom:
+    name: Geom gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy (geom)
+        run: cargo clippy -p solidcraft-geom --all-targets --locked -- -D warnings
+      - name: Tests (geom)
+        run: cargo test -p solidcraft-geom --locked
+      - name: WebAssembly build (geom)
+        run: cargo build -p solidcraft-geom --target wasm32-unknown-unknown --locked
+      - name: Dependency layers
+        run: cargo xtask layers
+      - name: Sorted lists
+        run: cargo xtask lists
+      - name: HLR timing (release, ignored test)
+        run: cargo test --release -p solidcraft-geom --lib --locked hlr_timing -- --ignored --nocapture
