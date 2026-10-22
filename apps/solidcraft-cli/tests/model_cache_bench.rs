@@ -26,17 +26,11 @@ fn reopen_times() {
     let saved = s.model.saved(&design).unwrap();
     let sizes: Vec<usize> = saved.bodies.iter().map(|b| solidcraft_engine::kernel::encode_native_body(b).unwrap().len()).collect();
     let pieces: Vec<Vec<(usize, usize)>> = sizes.iter().enumerate().map(|(i, n)| vec![(i, *n)]).collect();
-    let total: usize = sizes.iter().sum();
-    // The smallest budget that keeps a model (the final state's).
-    let (mut lo, mut hi) = (0, total);
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if saved.thinned(&pieces, mid).is_some() { hi = mid } else { lo = mid + 1 }
-    }
-    println!("{}", json!({"design": "plate", "features": n, "bodies stored": saved.bodies.len(), "payload": total, "final": lo}));
+    let total: usize = sizes.iter().sum::<usize>() + serde_json::to_vec(&saved.records).unwrap().len();
+    println!("{}", json!({"design": "plate", "features": n, "bodies stored": saved.bodies.len(), "payload and records": total}));
     let mut cases: Vec<(String, Option<SavedModel>)> = vec![("none (before #3220: the cache left out)".into(), None)];
-    for (name, budget) in [("whole", total), ("50%", total / 2), ("25%", total / 4), ("10%", total / 10), ("smallest", lo)] {
-        cases.push((name.into(), saved.thinned(&pieces, budget.max(lo)).map(|(m, _)| m)));
+    for (name, budget) in [("whole", total), ("50%", total / 2), ("25%", total / 4), ("10%", total / 10), ("smallest", 0)] {
+        cases.push((name.into(), saved.thinned(&pieces, budget).map(|(m, _, _)| m)));
     }
     let dir = std::env::temp_dir();
     for (name, model) in &cases {
