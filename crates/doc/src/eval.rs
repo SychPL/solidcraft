@@ -1834,7 +1834,8 @@ impl Model {
                 if r.error.is_none() {
                     state = r.state.clone();
                 }
-                out.push(FeatureResult { state: state.clone(), ..r.clone() });
+                reuse &= r.error.is_none();
+                out.push(FeatureResult { state: state.clone(), unkept: false, ..r.clone() });
                 continue;
             }
             recomputed += 1;

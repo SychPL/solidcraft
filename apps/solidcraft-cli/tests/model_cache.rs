@@ -197,15 +197,23 @@ fn check_thinned(name: &str, built: &Session, saved: &SavedModel) {
 
 /// A model too big for its file keeps the final state, then the slowest features' states as fit
 /// (#3220). Both the smallest such model (the final state, and states that add no body to it)
-/// and one that keeps more open as the design evaluated again.
+/// and one that keeps more open as the design evaluated again. The placed components' design has
+/// a cut whose fingerprint reads where the bodies before it lie, which a state left out does not
+/// say until it is evaluated.
 #[test]
 fn thinned_models_open_as_evaluated() {
-    for sample in ["Sample Plate", "Plastic Enclosure"] {
-        let script = solidcraft_engine::sample::samples().into_iter().find(|s| s.name == sample).unwrap().script;
-        let mut built = Session::default();
-        for c in script()["commands"].as_array().unwrap() {
-            built.execute(c["command"].as_str().unwrap(), &c["params"]).unwrap();
-        }
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/components-arm.solidcraft");
+    for sample in ["Sample Plate", "Plastic Enclosure", "components-arm"] {
+        let built = match solidcraft_engine::sample::samples().into_iter().find(|s| s.name == sample) {
+            Some(s) => {
+                let mut built = Session::default();
+                for c in (s.script)()["commands"].as_array().unwrap() {
+                    built.execute(c["command"].as_str().unwrap(), &c["params"]).unwrap();
+                }
+                built
+            }
+            None => open(&corpus),
+        };
         let saved = built.model.saved(&built.design()).unwrap();
         // Every body a megabyte (the records fit in the room left over): each budget keeps one more
         // body's worth of states.
