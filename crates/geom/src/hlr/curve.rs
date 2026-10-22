@@ -60,6 +60,8 @@ impl C3 {
                 spline(knots, points.iter().map(|p| [p[0], p[1], p[2], 1.]).collect())?,
                 CurveAccuracy::Bounded { max_deviation_mm: *fitting_tolerance },
             ),
+            // Procedural: the curve is traced on demand from its leader, which carries no bound.
+            Curve::SurfaceIntersection { .. } => return Err(HlrError::Unsupported("surface intersection curve")),
         })
     }
 
