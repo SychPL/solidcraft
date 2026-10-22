@@ -941,7 +941,7 @@ mod tests {
         for bodies in [24, 31] {
             let (states, kept, two, _) = thinned(bodies);
             assert_eq!(states, vec![false, true, false, true], "room for {bodies} bodies");
-            assert_eq!(kept, (0..16).chain(32..40).collect::<Vec<_>>());
+            assert_eq!(kept, (0..8).chain(16..24).chain(32..40).collect::<Vec<_>>());
             assert_eq!(two.records["model_bodies"].as_array().unwrap().len(), 24);
             let last = two.final_state().unwrap();
             assert_eq!(
