@@ -1,0 +1,86 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#4882 (#3220) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-3220
+on:
+  push:
+    branches: [fork-ci-3220]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy (doc, io, cli)
+        run: cargo clippy -p solidcraft-doc -p solidcraft-io -p solidcraft-cli --all-targets --profile ci --locked -- -D warnings
+      - name: Container tests
+        run: cargo test -p solidcraft-io --profile ci --locked --lib -- design::tests
+      - name: Model cache round trips
+        run: cargo test -p solidcraft-cli --profile ci --locked --test model_cache
+      - name: Repository checks
+        run: |
+          cargo xtask layers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Reopen times
+        run: cargo test -p solidcraft-cli --release --locked --test model_cache_bench -- --ignored --nocapture
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Tests (the pull request's default filter)
+        run: cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4
