@@ -207,9 +207,12 @@ fn thinned_models_open_as_evaluated() {
             built.execute(c["command"].as_str().unwrap(), &c["params"]).unwrap();
         }
         let saved = built.model.saved(&built.design()).unwrap();
-        // Every body one byte: each budget keeps one more body's worth of states.
-        let pieces: Vec<Vec<(usize, usize)>> = (0..saved.bodies.len()).map(|i| vec![(i, 1)]).collect();
-        let thinned: Vec<SavedModel> = (0..=saved.bodies.len()).filter_map(|budget| saved.thinned(&pieces, budget).map(|(m, _)| m)).collect();
+        // Every body a megabyte (the records fit in the room left over): each budget keeps one more
+        // body's worth of states.
+        let body = 1 << 20;
+        let pieces: Vec<Vec<(usize, usize)>> = (0..saved.bodies.len()).map(|i| vec![(i, body)]).collect();
+        let thinned: Vec<SavedModel> =
+            (0..=saved.bodies.len()).filter_map(|n| saved.thinned(&pieces, n * body + body - 1).map(|(m, _, _)| m)).collect();
         let kept = |m: &SavedModel| m.records["features"].as_array().unwrap().iter().filter(|f| f.get("state").is_some()).count();
         let smallest = thinned.first().unwrap();
         assert!(smallest.records["states"].as_array().unwrap().len() < saved.records["states"].as_array().unwrap().len(), "{sample}");

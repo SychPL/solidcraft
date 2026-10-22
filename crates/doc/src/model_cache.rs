@@ -356,14 +356,16 @@ impl SavedModel {
     }
 
     /// This model with fewer states, for a design file without room for all of them (#3220): the
-    /// final state (what the design shows), then the others, the slowest feature's first (the
-    /// ones opening would take longest to evaluate again; of equal ones the later first), each
-    /// while the bodies it adds still fit in `budget` bytes. `pieces[i]` is what keeping body `i`
-    /// stores, as ids and bytes: a piece that several bodies or states need counts once. A
-    /// feature whose state is left out keeps none, and opening evaluates it again
-    /// ([`Model::adopt`]). `None` when not even the final state fits. With the model, the index
-    /// here of each body it keeps.
-    pub fn thinned(&self, pieces: &[Vec<(usize, usize)>], budget: usize) -> Option<(SavedModel, Vec<usize>)> {
+    /// final state (what the design shows, kept whatever it costs), then the others, the slowest
+    /// feature's first (the ones opening would take longest to evaluate again; of equal ones the
+    /// later first), each while what it adds still fits in `budget` bytes: the bodies no state kept
+    /// so far holds, and the records of the state, those bodies, their names and sketches.
+    /// `pieces[i]` is what keeping body `i` stores, as ids and bytes: a piece that several bodies
+    /// or states need counts once. A feature whose state is left out keeps none, and opening
+    /// evaluates it again ([`Model::adopt`]). With the model, the index here of each body it keeps,
+    /// and the bytes it counted: over `budget` when the final state alone is. `None` only for
+    /// records it cannot read.
+    pub fn thinned(&self, pieces: &[Vec<(usize, usize)>], budget: usize) -> Option<(SavedModel, Vec<usize>, usize)> {
         let list = |key: &str| self.records.get(key).and_then(Json::as_array);
         let (features, states, model_bodies) = (list("features")?, list("states")?, list("model_bodies")?);
         let (names, sketches) = (list("names")?, list("sketches")?);
@@ -380,6 +382,11 @@ impl SavedModel {
         let state_bodies = states.iter().map(|s| held(s, "bodies", model_bodies.len())).collect::<Option<Vec<_>>>()?;
         let state_sketches = states.iter().map(|s| held(s, "sketches", sketches.len())).collect::<Option<Vec<_>>>()?;
         let body_of = model_bodies.iter().map(|r| at(r.get("body"), self.bodies.len())).collect::<Option<Vec<_>>>()?;
+        let names_of = model_bodies.iter().map(|r| at(r.get("names"), names.len())).collect::<Option<Vec<_>>>()?;
+        // What each record takes in the file.
+        let bytes = |list: &[Json]| list.iter().map(|r| serde_json::to_vec(r).map_or(usize::MAX, |b| b.len().saturating_add(1))).collect::<Vec<_>>();
+        let (state_bytes, body_bytes) = (bytes(states.as_slice()), bytes(model_bodies.as_slice()));
+        let (name_bytes, sketch_bytes) = (bytes(names.as_slice()), bytes(sketches.as_slice()));
         // What each state's feature took to evaluate, and the final state.
         let mut ms = vec![0.0f64; states.len()];
         let mut last = None;
@@ -395,14 +402,21 @@ impl SavedModel {
         let mut order: Vec<usize> = (0..states.len()).filter(|s| *s != last).collect();
         order.sort_by(|a, b| time(b).total_cmp(&time(a)).then(b.cmp(a)));
         let mut keep = vec![false; states.len()];
-        // The model bodies and the pieces kept so far, and the pieces' bytes.
+        // The records and pieces kept so far, and their bytes.
         let mut kept_bodies = vec![false; model_bodies.len()];
+        let (mut names_used, mut sketches_used) = (vec![false; names.len()], vec![false; sketches.len()]);
         let mut stored = std::collections::HashSet::new();
         let mut used = 0usize;
         for s in std::iter::once(last).chain(order) {
-            let mut adds = HashMap::new();
+            let (mut adds, mut new_names, mut new_sketches) = (HashMap::new(), std::collections::HashSet::new(), std::collections::HashSet::new());
+            let mut records = *state_bytes.get(s)?;
             for &m in state_bodies.get(s)? {
                 if kept_bodies.get(m) == Some(&false) {
+                    records = records.saturating_add(*body_bytes.get(m)?);
+                    let n = *names_of.get(m)?;
+                    if names_used.get(n) == Some(&false) && new_names.insert(n) {
+                        records = records.saturating_add(*name_bytes.get(n)?);
+                    }
                     for &(piece, bytes) in pieces.get(*body_of.get(m)?)? {
                         if !stored.contains(&piece) {
                             adds.insert(piece, bytes);
@@ -410,11 +424,13 @@ impl SavedModel {
                     }
                 }
             }
-            let total = adds.values().fold(used, |t, b| t.saturating_add(*b));
-            if total > budget {
-                if s == last {
-                    return None;
+            for &k in state_sketches.get(s)? {
+                if sketches_used.get(k) == Some(&false) && new_sketches.insert(k) {
+                    records = records.saturating_add(*sketch_bytes.get(k)?);
                 }
+            }
+            let total = adds.values().fold(used.saturating_add(records), |t, b| t.saturating_add(*b));
+            if total > budget && s != last {
                 continue;
             }
             used = total;
@@ -422,20 +438,18 @@ impl SavedModel {
             for &m in state_bodies.get(s)? {
                 *kept_bodies.get_mut(m)? = true;
             }
+            for n in new_names {
+                *names_used.get_mut(n)? = true;
+            }
+            for k in new_sketches {
+                *sketches_used.get_mut(k)? = true;
+            }
             *keep.get_mut(s)? = true;
         }
         // What the states kept refer to, numbered again in the order it had.
         let mut kernel_used = vec![false; self.bodies.len()];
-        let mut names_used = vec![false; names.len()];
-        let mut sketches_used = vec![false; sketches.len()];
-        for (m, r) in model_bodies.iter().enumerate().filter(|(m, _)| kept_bodies.get(*m) == Some(&true)) {
+        for m in (0..model_bodies.len()).filter(|m| kept_bodies.get(*m) == Some(&true)) {
             *kernel_used.get_mut(*body_of.get(m)?)? = true;
-            *names_used.get_mut(at(r.get("names"), names.len())?)? = true;
-        }
-        for (ids, _) in state_sketches.iter().zip(&keep).filter(|(_, k)| **k) {
-            for &i in ids {
-                *sketches_used.get_mut(i)? = true;
-            }
         }
         let renumber = |used: &[bool]| -> Vec<Option<usize>> {
             let mut next = 0;
@@ -488,7 +502,7 @@ impl SavedModel {
         });
         let kept: Vec<usize> = (0..self.bodies.len()).filter(|i| kernel_used.get(*i) == Some(&true)).collect();
         let bodies = kept.iter().filter_map(|i| self.bodies.get(*i).cloned()).collect();
-        Some((SavedModel { records, bodies }, kept))
+        Some((SavedModel { records, bodies }, kept, used))
     }
 }
 

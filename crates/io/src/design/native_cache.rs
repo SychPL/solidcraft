@@ -52,9 +52,18 @@ pub(super) fn encode_model(model: &SavedModel, document: &[u8], space: usize) ->
         .collect();
     let mut budget = space.min(MAX_DESIGN_BYTES);
     for _ in 0..16 {
-        let Some((thin, kept)) = model.thinned(&pieces, budget) else { break };
+        let Some((thin, kept, counted)) = model.thinned(&pieces, budget) else { break };
+        // Only the final state, which is kept whatever it costs: nothing smaller is left to try. What
+        // it counted is about what its cache holds, so over `space` it does not fit.
+        let smallest = counted > budget;
+        if smallest && counted > space {
+            break;
+        }
         let Ok((manifest, data)) = encoded.cache(&thin.records, &kept, document) else {
-            budget /= 2;
+            if smallest {
+                break;
+            }
+            budget = counted / 2;
             continue;
         };
         if fits(&manifest, &data) {
@@ -68,8 +77,13 @@ pub(super) fn encode_model(model: &SavedModel, document: &[u8], space: usize) ->
             );
             return Ok((manifest, data));
         }
-        // The records took the room: as much less for the bodies (fewer states keep fewer records).
-        budget = if manifest.len() > MAX_MANIFEST { data.len() / 2 } else { space.saturating_sub(manifest.len()).min(data.len().saturating_sub(1)) };
+        if smallest {
+            break;
+        }
+        // What the choice did not count (the bodies' table, the slices) took the room: choose again
+        // within that much less than it counted, so each try keeps less.
+        let over = manifest.len().saturating_add(data.len()).saturating_sub(space).max(manifest.len().saturating_sub(MAX_MANIFEST));
+        budget = counted.saturating_sub(over).saturating_sub(1);
     }
     log::info!("the model cache ({} MB) does not fit the design file: saved without it", total >> 20);
     Err(invalid("model cache size"))
