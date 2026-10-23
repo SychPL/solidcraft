@@ -87,12 +87,34 @@ pub fn run_api(site: &str) -> Result<(), String> {
     let browser = Chrome::launch(&chrome, &work.0.join("profile"))?;
     let mut cdp = browser.connect()?;
     cdp.call("Emulation.setDeviceMetricsOverride", json!({"width": 1280, "height": 900, "deviceScaleFactor": 1, "mobile": false}))?;
+    // The page has the keyboard, as a tab the user is looking at does (for KEYS_TEST).
+    cdp.call("Emulation.setFocusEmulationEnabled", json!({"enabled": true}))?;
     cdp.call("Page.navigate", json!({"url": format!("http://127.0.0.1:{}{PREFIX}?webgl", server.port)}))?;
     wait_for(&mut cdp, "!!window.solidcraft && !document.getElementById('solidcraft_loading')", "the browser API is ready", |v| v == true)?;
     let result = cdp.eval(API_TEST)?;
     println!("web-api-test: {result}");
+    let keys = cdp.eval(KEYS_TEST)?;
+    println!("web-api-test: {keys}");
     Ok(())
 }
+
+/// The browser's own tab switching keys reach it while the app has the keyboard (#5227): their
+/// default action isn't cancelled, while Tab's is (the app moves between its fields with it).
+const KEYS_TEST: &str = r#"(async () => {
+    const check = (condition, message) => { if (!condition) throw new Error(message); };
+    const canvas = document.getElementById('solidcraft_canvas');
+    canvas.focus();
+    canvas.dispatchEvent(new FocusEvent('focus'));
+    const cancelled = init => {
+        const e = new KeyboardEvent('keydown', {key: 'Tab', code: 'Tab', bubbles: true, cancelable: true, ...init});
+        canvas.dispatchEvent(e);
+        return e.defaultPrevented;
+    };
+    check(!cancelled({ctrlKey: true}), 'Ctrl+Tab is left to the browser');
+    check(!cancelled({ctrlKey: true, shiftKey: true}), 'Ctrl+Shift+Tab is left to the browser');
+    check(cancelled({}), 'the app takes Tab (it has the keyboard)');
+    return {ctrl_tab: 'browser', ctrl_shift_tab: 'browser', tab: 'app'};
+})()"#;
 
 const API_TEST: &str = r#"(async () => {
     const app = window.solidcraft;
