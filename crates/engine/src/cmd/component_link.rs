@@ -139,7 +139,7 @@ fn linked_bodies(file: &Path, own: Option<&str>) -> Result<Linked> {
 }
 
 /// The solid bodies of `part`, the design saved as `shown`, as an Import feature.
-fn session_bodies(part: &Session, shown: &str) -> Result<(String, solidcraft_io::StepFeature)> {
+fn session_bodies(part: &Session, shown: &str) -> Result<Linked> {
     let name = part.doc.name.clone();
     if let Some(e) = part.model.results.iter().find_map(|r| r.error.clone()) {
         return Err(EngineError::Other(format!("{shown}: the design has a feature that fails ({e}); fix it before linking it")));
