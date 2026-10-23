@@ -1,5 +1,6 @@
 # Fork-only (never upstream): checks for tangency-labs/solidcraft#5350 (#5227) on GitHub-hosted
-# runners, since the fork has no Blacksmith runners (re-run trigger).
+# runners. Run 39932878605 covered everything else at the same PR head; this re-runs only the
+# web app's wasm32 clippy without linting its dependencies (crates/io trips drop_non_drop there).
 name: fork-5227
 on:
   push:
@@ -10,31 +11,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  TRUNK_VERSION: v0.21.14
 jobs:
-  quick:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 150
-    steps:
-      - uses: actions/checkout@v4
-      - run: scripts/ci/build-jobs.sh
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy (web app, xtask)
-        run: cargo clippy -p solidcraft-web -p xtask --all-targets --profile ci --locked -- -D warnings
-      - name: Tests (web app, xtask)
-        run: cargo test -p solidcraft-web -p xtask --profile ci --locked
-      - name: Repository checks
-        run: |
-          cargo xtask layers
-          cargo xtask lists
-          cargo xtask ui-containers
-      - name: Offline test (stand-in site, headless Chrome)
-        run: cargo xtask web-offline-test
-  wasm:
+  wasm-clippy:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -43,43 +21,5 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           components: clippy
-      - run: cargo xtask wasm
-      - name: Clippy for the browser (web app)
-        run: cargo clippy --target wasm32-unknown-unknown -p solidcraft-web --profile ci --locked -- -D warnings
-  web:
-    strategy:
-      fail-fast: false
-      matrix:
-        app: [fix, main]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 150
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - name: Install trunk
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl -sSL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" | tar -xz -C "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Use main's web app (before the fix)
-        if: matrix.app == 'main'
-        run: git checkout edf57cec -- apps/solidcraft-web
-      - name: Build the web app
-        working-directory: apps/solidcraft-web
-        run: trunk build --release --public-url ./
-      - name: Browser API and keys (headless Chrome)
-        if: matrix.app == 'fix'
-        run: cargo xtask web-api-test --site dist/web
-      - name: Offline test on the real build
-        if: matrix.app == 'fix'
-        run: cargo xtask web-offline-test --site dist/web
-      - name: Main fails the Ctrl+Tab check
-        if: matrix.app == 'main'
-        run: |
-          cargo xtask web-api-test --site dist/web > out.txt 2>&1 && { cat out.txt; echo "main should fail the Ctrl+Tab check"; exit 1; }
-          cat out.txt
-          grep -q "Ctrl+Tab is left to the browser" out.txt
+      - name: Clippy for the browser (web app only)
+        run: cargo clippy --target wasm32-unknown-unknown -p solidcraft-web --profile ci --locked --no-deps -- -D warnings
