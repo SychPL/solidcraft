@@ -1,5 +1,5 @@
 # Fork-only (never upstream): checks for tangency-labs/solidcraft#5350 (#5227) on GitHub-hosted
-# runners, since the fork has no Blacksmith runners.
+# runners, since the fork has no Blacksmith runners (re-run trigger).
 name: fork-5227
 on:
   push:
