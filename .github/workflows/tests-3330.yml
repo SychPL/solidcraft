@@ -1,0 +1,39 @@
+# Fork-only: the tests of the crates #3330 touches, on a GitHub-hosted runner (never upstream).
+# The full test job needs a 32-core runner to finish in its hour; this runs the affected crates.
+name: Tests 3330 (fork only)
+on:
+  push:
+    branches: [fork-ci-3330]
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      - name: Gates (layers, lists, wasm)
+        run: |
+          cargo xtask layers
+          cargo xtask lists
+          cargo xtask wasm
+      - name: Clippy of the affected crates
+        run: cargo clippy -p solidcraft-doc -p solidcraft-engine -p solidcraft-io --all-targets --profile ci --locked -- -D warnings
+      - name: Tests of the affected crates
+        run: |
+          cargo nextest run -p solidcraft-doc -p solidcraft-engine -p solidcraft-io --cargo-profile ci --locked --profile ci --no-tests=pass \
+            --ignore-default-filter -E 'default() & not (binary(action_matrix) & test(=action_matrix_sample))'
