@@ -1,7 +1,7 @@
 {
   "en": {
     "assembly_move.contact": "stopped by contact",
-    "assembly_move.held": "Move: {part} has no freedom to drag ({reason}). Its joints are kept.",
+    "assembly_move.held": "Move: {part} has no freedom to drag: {reason}. Its joints are kept.",
     "assembly_move.limit": "at its limit",
     "assembly_move.loop": "held by a closed loop",
     "cmd.joint_freedoms": "Joint Freedoms",
@@ -12,7 +12,7 @@
   },
   "ja": {
     "assembly_move.contact": "接触で停止",
-    "assembly_move.held": "移動: {part} にはドラッグできる自由度がありません ({reason})。ジョイントはそのまま保持されます。",
+    "assembly_move.held": "移動: {part} にはドラッグできる自由度がありません: {reason}。ジョイントはそのまま保持されます。",
     "assembly_move.limit": "制限に到達",
     "assembly_move.loop": "閉ループで固定",
     "cmd.joint_freedoms": "ジョイントの自由度",
@@ -23,7 +23,7 @@
   },
   "zh": {
     "assembly_move.contact": "因接触而停止",
-    "assembly_move.held": "移动：{part} 没有可拖动的自由度（{reason}）。其接头保持不变。",
+    "assembly_move.held": "移动：{part} 没有可拖动的自由度：{reason}。其接头保持不变。",
     "assembly_move.limit": "已达限制",
     "assembly_move.loop": "被闭环固定",
     "cmd.joint_freedoms": "接头自由度",
@@ -34,7 +34,7 @@
   },
   "pl": {
     "assembly_move.contact": "zatrzymane przez kontakt",
-    "assembly_move.held": "Przesuń: {part} nie ma swobody do przeciągania ({reason}). Jego złącza pozostają.",
+    "assembly_move.held": "Przesuń: {part} nie ma swobody do przeciągania: {reason}. Jego złącza pozostają.",
     "assembly_move.limit": "na granicy",
     "assembly_move.loop": "trzymane przez zamkniętą pętlę",
     "cmd.joint_freedoms": "Swobody złącza",
