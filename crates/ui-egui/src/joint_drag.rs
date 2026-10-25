@@ -212,11 +212,9 @@ pub fn open(app: &mut SolveApp, occurrence: u64) -> bool {
         crate::dialogs::cancel(app);
     }
     app.tool = None;
+    app.tree.occurrence_move = None;
     match handles(app, occurrence, &r) {
-        Some(h) => {
-            app.tree.occurrence_move = None;
-            app.viewport.joint_move = Some(h);
-        }
+        Some(h) => app.viewport.joint_move = Some(h),
         None => {
             let part = app.session.doc.occurrences.iter().find(|o| o.id == occurrence).map(|o| o.name.clone()).unwrap_or_default();
             let why = r["reason"].as_str().unwrap_or_default();
@@ -328,6 +326,8 @@ fn drag(app: &mut SolveApp, g: gizmo::Drag) {
     if g.started {
         let checkpoint = app.session.execute("edit.checkpoint", &json!({})).ok().and_then(|r| r["checkpoint"].as_u64());
         h.drag = Some(HandleDrag { index: f.index, start: f.value, asked: f.value, checkpoint, step: None });
+        h.readout = Some((0.0, f.turn, None));
+        h.shown_on = Some(app.session.doc.clone());
     }
     let Some(mut d) = h.drag.take().filter(|d| d.index == f.index) else { return };
     let travel = match g.change {
@@ -650,6 +650,18 @@ mod tests {
         run(&mut h, "component.activate", json!({"component": "root"}));
         move_part(&mut h, "Loose");
         assert!(h.app.viewport.joint_move.is_none() && h.app.dialog.is_some());
+        crate::dialogs::cancel(&mut h.app);
+        // The browser's Move/Copy on the welded plate warns and closes another part's free Move.
+        let menu = |h: &mut Harness, part: &str| {
+            let target = crate::context_menu::Target::Occurrence { path: vec![occ(h, part)] };
+            let item = crate::context_menu::items(&h.app, &target).into_iter().find(|i| i.id == "ui.moveOccurrence").expect("Move/Copy");
+            crate::context_menu::run_item(&mut h.app, &item, egui::Pos2::ZERO);
+            h.frames(2);
+        };
+        menu(&mut h, "Loose");
+        assert!(h.app.tree.occurrence_move.is_some(), "a free part gets the free Move");
+        menu(&mut h, "Plate");
+        assert!(h.app.tree.occurrence_move.is_none() && h.app.viewport.joint_move.is_none());
     }
 
     /// Turning the arm's ring a quarter round turns it about its hinge in one undo step, the
