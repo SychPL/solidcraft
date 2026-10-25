@@ -559,8 +559,8 @@ the right outcome for a plugin it cannot run.
 - An update never opts the user in. An update that changes what was approved (a new entry, a changed
   kind or effect, new permissions) stops the plugin until it is approved again, and the Plugins page
   lists exactly what is new or changed before any of it appears in menus, surfaces (9b) or command
-  listings. The approval screen lists the surfaces a plugin adds, in plain words ("adds a tab to
-  Open design").
+  listings. The approval screen lists the surfaces a plugin adds, in plain words ("adds Convert from...
+  next to Open").
 - Who tells the host: the host never reads preferences itself. Whoever installs it hands it the policy
   through `PluginHost::set_policy(approved: id -> hash, disabled: ids)`. The desktop app passes
   `approved_plugins` and `disabled_plugins` at start and again whenever the Plugins page changes them;
@@ -1099,7 +1099,7 @@ accessibility, and the generic plugin icon (section 5). A plugin never draws, mo
 
 | `kind` | Worlds | Fronts | The host draws |
 |---|---|---|---|
-| `open-source` | `importer-plugin` | its `formats` | a tab in Open design with `label`, the formats it reads and a file picker (a folder note with `reads_input_folder`); it runs `plugin.import {plugin, path}` and shows the report, with Open and Cancel, before the design opens |
+| `open-source` | `importer-plugin` | its `formats` | on desktop, a "Convert from `label`..." item next to Open on the Home page and in the File menu, since Open there is the system file dialog, which cannot carry a plugin tab; where the app draws its own Open list (the web build's Computer and Browser storage places, later), a place in that list. Either shows the formats it reads and a file picker (a folder picker with `reads_input_folder`), runs `plugin.import {plugin, path}`, and shows the report, with Open and Cancel, before the design opens |
 | `import-menu` | `importer-plugin` | its `formats` | the same, as an item under File > Import |
 | `toolbar-entry` | `command-plugin`, `panel-plugin` | `entry` | a button that runs `plugin.<id>.<entry>`, on the plugins' ribbon panel the host picks; in 0.1 only for an entry that needs no parameters. This is the Design > Utilities case of #4933, and its placement rules should stay in step with that proposal |
 | `panel` | `panel-plugin` | its panel | a button next to the toolbar entries that opens `plugin.panel {plugin}` |
@@ -1109,7 +1109,7 @@ accessibility, and the generic plugin icon (section 5). A plugin never draws, mo
 - **The host owns placement.** Surfaces are placed in host order (plugin id, then entry or kind), never
   in manifest order. A surface is identified by its plugin id plus `entry` (or `kind`), so it can never
   take a core slot or another plugin's. Caps: per plugin, 8 surfaces, at most one `open-source` and one
-  `import-menu`; across plugins, 8 tabs in Open design, 16 items in File > Import and 32 buttons on the
+  `import-menu`; across plugins, 8 `open-source` items, 16 items in File > Import and 32 buttons on the
   plugins' panel. Past a cap, the surfaces later in host order are not placed, and neither is one whose
   label equals a core item's in the same place; the Plugins page says which and why, and their commands
   stay callable.
@@ -1157,24 +1157,6 @@ feature), so they need no guest toolchain.
   on the background thread: the Plugins page keeps drawing frames while it shows "checking...", and a
   `plugin.run` during the compile fails at once with "still loading".
 - T9 plugin.json v1: every rule in section 5 has a refusal case; a listing-only folder still lists.
-- T21 a design saved with `plugin.review-notes` metadata under plugin 0.1.0 opens with 0.2.0 loaded
-  and with the plugin turned off; after an edit and a save the metadata is byte-identical.
-  `store.previous-version()` returns "0.1.0" on 0.2.0's first call and "0.2.0" once a call of it
-  returned, and still "0.1.0" when that first call trapped.
-- T22 `solidcraft-cli plugin check` refuses every rule of section 5 with the Plugins page's messages,
-  and the schema it uses equals the one generated from the host types; `plugin test` fails an entry
-  that traps, goes beyond its rights or makes two undo steps.
-- T23 an `effect: read` entry gets `denied` for `select.set` and for `host.request-execute`; the agent
-  chat gate runs it without asking and asks before an `edit` entry.
-- T24 an update that adds an entry stops the plugin until it is approved again, and the Plugins page
-  lists the new entry; an update that changes only code keeps running.
-- T25 surfaces are placed in host order whatever the manifest order; a ninth plugin's Open design tab,
-  a surface whose label equals a core item's, and a surface naming another plugin's entry are not
-  placed, and the Plugins page says why; their commands still run from the command line.
-- T26 a `toolbar-entry` button runs `plugin.<id>.<entry>` exactly as `engine.execute` does (same
-  result, one undo step); turning the plugin off removes the button in the same frame.
-- T27 an `open-source` tab imports a file through `plugin.import`, shows the report and opens the
-  design only on Open; an update that adds an `open-source` surface stops the plugin until approved.
 - T10 a handler calling an undoable command, or a `noundo` command off the handler-safe list
   (`browser.visibility`, `component.activate`), gets `denied` even when plugin.json lists it;
   `select.set` works. The handler-safe list test of 6.4 rule 5 passes.
@@ -1223,6 +1205,24 @@ feature), so they need no guest toolchain.
   running.
 - T20 two importers listing the same extension: the second does not load, and the Plugins page names
   both.
+- T21 a design saved with `plugin.review-notes` metadata under plugin 0.1.0 opens with 0.2.0 loaded
+  and with the plugin turned off; after an edit and a save the metadata is byte-identical.
+  `store.previous-version()` returns "0.1.0" on 0.2.0's first call and "0.2.0" once a call of it
+  returned, and still "0.1.0" when that first call trapped.
+- T22 `solidcraft-cli plugin check` refuses every rule of section 5 with the Plugins page's messages,
+  and the schema it uses equals the one generated from the host types; `plugin test` fails an entry
+  that traps, goes beyond its rights or makes two undo steps.
+- T23 an `effect: read` entry gets `denied` for `select.set` and for `host.request-execute`; the agent
+  chat gate runs it without asking and asks before an `edit` entry.
+- T24 an update that adds an entry stops the plugin until it is approved again, and the Plugins page
+  lists the new entry; an update that changes only code keeps running.
+- T25 surfaces are placed in host order whatever the manifest order; a ninth plugin's `open-source` item,
+  a surface whose label equals a core item's, and a surface naming another plugin's entry are not
+  placed, and the Plugins page says why; their commands still run from the command line.
+- T26 a `toolbar-entry` button runs `plugin.<id>.<entry>` exactly as `engine.execute` does (same
+  result, one undo step); turning the plugin off removes the button in the same frame.
+- T27 an `open-source` item imports a file through `plugin.import`, shows the report and opens the
+  design only on Open; an update that adds an `open-source` surface stops the plugin until approved.
 
 ## 12. Threat model
 
