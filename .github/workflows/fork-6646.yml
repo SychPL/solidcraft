@@ -147,9 +147,10 @@ jobs:
                       sys.exit(f"{method} failed: {reply}")
           app.wait(timeout=60)
           PY
+          set -o pipefail
           python3 -I "$RUNNER_TEMP/transcript.py" | tee transcript.txt
-      - if: failure()
-        run: tail -c 8000 "$RUNNER_TEMP/app.log" || true
+      - if: always()
+        run: tail -c 12000 "$RUNNER_TEMP/app.log" || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
