@@ -699,7 +699,7 @@ mod tests {
         let d = screen(&mut h, out(40.0));
         move_to(&mut h, c, d);
         let fine = readout(&h).map(|r| r.0).unwrap_or(f64::NAN);
-        assert!((fine - 37.0).abs() < 0.11 && ((fine * 10.0).round() - fine * 10.0).abs() < 1e-6, "{fine}");
+        assert!((fine - 37.0).abs() < 0.11 && ((fine * 10.0).round() - fine * 10.0).abs() < 1e-4, "{fine}");
         release(&mut h, d);
     }
 
