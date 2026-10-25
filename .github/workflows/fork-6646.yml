@@ -1,0 +1,157 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#6757 (#6646) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-6646
+on:
+  push:
+    branches: [fork-ci-6646]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+      - name: Clippy (engine, ui-egui)
+        if: always()
+        run: cargo clippy -p solidcraft-engine -p solidcraft-ui-egui --all-targets --profile ci --locked -- -D warnings
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Tests (the pull request's default filter)
+        run: cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4
+  transcript:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: Ask the running app for document.revision
+        run: |
+          cat > "$RUNNER_TEMP/transcript.py" <<'PY'
+          import json, os, secrets, socket, subprocess, sys, time
+          token = secrets.token_hex(32)
+          env = dict(os.environ, SOLIDCRAFT_CONTROL_TOKEN=token, SOLIDCRAFT_CONTROL_DIR=os.path.join(os.environ["RUNNER_TEMP"], "control"))
+          log = open(os.path.join(os.environ["RUNNER_TEMP"], "app.log"), "wb")
+          app = subprocess.Popen(["xvfb-run", "-a", "-s", "-screen 0 1600x1000x24 -nolisten tcp", "target/ci/solidcraft", "--control", "18846"],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          deadline = time.monotonic() + 120
+          while True:
+              try:
+                  conn = socket.create_connection(("127.0.0.1", 18846), timeout=60)
+                  break
+              except OSError:
+                  if app.poll() is not None or time.monotonic() > deadline:
+                      sys.exit("the app never listened")
+                  time.sleep(0.3)
+          steps = [
+              ("document.revision", {}),
+              ("engine.execute", {"command": "solid.box", "params": {"length": 30, "width": 20, "height": 10}}),
+              ("document.revision", {}),
+              ("document.inspect", {}),
+              ("engine.execute", {"command": "select.clear", "params": {}}),
+              ("document.revision", {}),
+              ("engine.execute", {"command": "parameters.add", "params": {"name": "w", "expression": "12 mm"}}),
+              ("document.revision", {}),
+              ("engine.execute", {"command": "edit.undo", "params": {}}),
+              ("document.revision", {}),
+              ("ui.documents", {"action": "new"}),
+              ("document.revision", {}),
+              ("ui.documents", {"action": "switch", "index": 0}),
+              ("document.revision", {}),
+              ("engine.execute", {"command": "document.revision", "params": {}}),
+          ]
+          shown = {"document.revision", "engine.execute"}
+          with conn, conn.makefile("rw") as io:
+              for n, (method, params) in enumerate(steps + [("app.quit", {"force": True})], 1):
+                  req = {"id": n, "method": method, "params": params}
+                  if n == 1:
+                      req["token"] = token
+                  io.write(json.dumps(req) + "\n")
+                  io.flush()
+                  reply = json.loads(io.readline())
+                  shown_req = {k: v for k, v in req.items() if k != "token"}
+                  if n == 1:
+                      shown_req["token"] = "…"
+                  if method == "document.revision" or (method == "engine.execute" and params.get("command") == "document.revision"):
+                      print(json.dumps(shown_req, separators=(",", ":")))
+                      print("→ " + json.dumps(reply, separators=(",", ":")))
+                  else:
+                      ok = reply.get("ok")
+                      print(json.dumps(shown_req, separators=(",", ":")) + f"   (ok: {str(ok).lower()})")
+                  if reply.get("ok") is not True:
+                      sys.exit(f"{method} failed: {reply}")
+          app.wait(timeout=60)
+          PY
+          python3 -I "$RUNNER_TEMP/transcript.py" | tee transcript.txt
+      - if: failure()
+        run: tail -c 8000 "$RUNNER_TEMP/app.log" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transcript
+          path: transcript.txt
