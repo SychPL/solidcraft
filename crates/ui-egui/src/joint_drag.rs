@@ -122,8 +122,10 @@ pub struct Handles {
     seen: Arc<Document>,
     drag: Option<HandleDrag>,
     /// The last drag's travel along its handle since it began (deg or mm, signed), whether it
-    /// turned, and why it stopped short (a message id).
+    /// turned, and why it stopped short (a message id); shown while the design is the one that
+    /// drag left (`shown_on`: not after an undo).
     readout: Option<(f64, bool, Option<&'static str>)>,
+    shown_on: Option<Arc<Document>>,
 }
 
 /// A value free to drag.
@@ -184,6 +186,7 @@ fn handles(app: &SolveApp, occurrence: u64, r: &Value) -> Option<Handles> {
         seen: app.session.doc.clone(),
         drag: None,
         readout: None,
+        shown_on: None,
     })
 }
 
@@ -294,9 +297,9 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, painter: &egui::Painte
     let Some(h) = app.viewport.joint_move.as_ref() else { return };
     // The design changed (a frame of the drag, undo, an edit): read the freedoms again.
     if !Arc::ptr_eq(&h.seen, &app.session.doc) {
-        let (occurrence, drag, readout) = (h.occurrence, h.drag.clone(), h.readout);
+        let (occurrence, drag, readout, shown_on) = (h.occurrence, h.drag.clone(), h.readout, h.shown_on.clone());
         match freedoms(app, occurrence).and_then(|r| handles(app, occurrence, &r)) {
-            Some(fresh) => app.viewport.joint_move = Some(Handles { drag, readout, ..fresh }),
+            Some(fresh) => app.viewport.joint_move = Some(Handles { drag, readout, shown_on, ..fresh }),
             None => return close(app),
         }
     }
@@ -349,6 +352,7 @@ fn drag(app: &mut SolveApp, g: gizmo::Drag) {
                 Some("assembly_move.limit")
             };
             h.readout = Some((f.sign * (got - d.start), f.turn, stop));
+            h.shown_on = Some(app.session.doc.clone());
         }
         Some(Err(_)) => {}
     }
@@ -367,10 +371,17 @@ fn close_drag(app: &mut SolveApp) {
     }
 }
 
+/// The readout shown: during a drag, and after it until the design changes (an undo).
+fn shown_readout(app: &SolveApp) -> Option<(f64, bool, Option<&'static str>)> {
+    let h = app.viewport.joint_move.as_ref()?;
+    let current = h.shown_on.as_ref().is_some_and(|d| Arc::ptr_eq(d, &app.session.doc));
+    h.readout.filter(|_| h.drag.is_some() || current)
+}
+
 /// The travel since the drag began, beside the handles, and why it stopped short.
 fn readout(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     let Some(h) = app.viewport.joint_move.as_ref() else { return };
-    let (Some((travel, turn, stop)), Some(at)) = (h.readout, proj.to_screen(h.centre)) else { return };
+    let (Some((travel, turn, stop)), Some(at)) = (shown_readout(app), proj.to_screen(h.centre)) else { return };
     let sign = if travel > 0.0 { "+" } else { "" };
     let value = if turn {
         format!("{sign}{:.*}°", usize::from(app.preferences.angle_decimals.min(6)), travel)
@@ -561,7 +572,7 @@ mod tests {
     }
 
     fn readout(h: &Harness) -> Option<(f64, bool, Option<&'static str>)> {
-        h.app.viewport.joint_move.as_ref()?.readout
+        super::shown_readout(&h.app)
     }
 
     fn screen_of(h: &mut Harness, handle: &str, by: Vec3, turn: f64) -> egui::Pos2 {
@@ -653,6 +664,8 @@ mod tests {
         assert!(h.app.viewport.joint_move.is_some(), "the handles stay for the next drag");
         run(&mut h, "edit.undo", json!({}));
         assert!(arm_at(&h, end).dist(end) < 1e-9, "{:?}", arm_at(&h, end));
+        h.frames(2);
+        assert!(readout(&h).is_none(), "undo takes the readout away");
     }
 
     /// Near the ring the turn goes in 10° steps; past the dashed guide in 0.1° steps, counted on
