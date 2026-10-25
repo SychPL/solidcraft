@@ -210,6 +210,11 @@ interface store {
     set: func(key: string, value: list<u8>) -> result<_, plugin-error>;
     remove: func(key: string) -> result<_, plugin-error>;
     keys: func() -> result<list<string>, plugin-error>;
+
+    /// The plugin version that last ran on this computer, or none on the first run. The
+    /// host records a new version only after one of its calls returns without a trap, so a
+    /// migration that fails runs again next time. Works without the `store` permission.
+    previous-version: func() -> option<string>;
 }
 
 /// HTTPS to the origins plugin.json names. Handlers only; a transaction gets `denied`.
@@ -485,7 +490,7 @@ still refused):
 | `api` | `"0.1"`; the host refuses an unknown major (and, while `0.x`, an unknown minor) |
 | `component` | a file name (no separators) inside the folder, at most 16 MiB (6.2) |
 | `world` | `command-plugin`, `panel-plugin`, or `importer-plugin` (only on a host with the `file-formats` feature, 9a); checked against the component's exports at load |
-| `entries` | 0-64; `name` `[a-z0-9_-]{1,32}`, unique; `label` 1-80 chars; `kind` `transaction` (default) or `action`; optional `params`, a one-line parameter doc in the style of `CommandSpec::params` (at most 1 KiB, no control characters), shown in the command listings; a `plugin.run` or `host.request-execute` of an unlisted or `action` entry, or a `plugin.act` of a `transaction` entry, is `invalid` |
+| `entries` | 0-64; `name` `[a-z0-9_-]{1,32}`, unique; `label` 1-80 chars; `kind` `transaction` (default) or `action`; optional `params`, a one-line parameter doc in the style of `CommandSpec::params` (at most 1 KiB, no control characters), shown in the command listings; optional `effect`, `edit` (default) or `read` (action entries only, 6.4); optional `input` and `output`, JSON Schemas of the params and the result (5a); optional `example`, one params value for `plugin test` (5a); a `plugin.run` or `host.request-execute` of an unlisted or `action` entry, or a `plugin.act` of a `transaction` entry, is `invalid` |
 | `panel` | required for `panel-plugin`, refused otherwise; `label` 1-40 chars |
 | `commands` | 0-256 engine command ids, each byte-equal to a `CommandSpec::id` in this build (`find_command` also matches case-insensitively, so the host compares the found spec's `id` with the listed one); otherwise the plugin does not load and the page says which id is missing. `engine.run` compares the same way |
 | `permissions.store` | private storage (section 6.6) |
@@ -506,6 +511,35 @@ change only extends the manifest it reads, so whichever lands second rebases. An
 change refuses the new fields (`deny_unknown_fields`) and lists the plugin under "skipped", which is
 the right outcome for a plugin it cannot run.
 
+### 5a. Schemas, checks and tools for plugin authors
+
+- **plugin.json has a published schema.** The host's manifest types derive their JSON Schema
+  (`schemars`, as the command contracts in `crates/engine/src/schema` already do), and that generated
+  file is the only definition of the format; there is no hand-kept copy to drift.
+  `solidcraft-cli plugin check <dir>` validates a plugin folder against it, checks each entry's
+  schemas and the component's world, compiles the component under its limits, and prints what the
+  approval screen will show.
+- **Entries can declare their parameters as a schema.** `input` (and optionally `output`) is a JSON
+  Schema built from the shared field types of the command contracts (`crates/engine/src/schema/types.rs`,
+  #2829), such as points, face references, and ids or names. With `input`, `engine.execute` and MCP
+  check a call strictly before the plugin sees it, as they do for typed built-in commands, and
+  `engine.describe` shows the schema. The one-line `params` doc stays accepted until 1.0, so the
+  pilots do not wait on #2829; from 1.0 on, `input` is required. A host-drawn form for an entry
+  (later work, section 13) is built from the same `input`.
+- **A conformance kit against the real host.** `solidcraft-cli plugin test <dir>` runs every entry
+  headless on the real host (never a fake) with its `example` params, or values generated from
+  `input`, and checks that it does not trap, that it stays within the rights of its kind and
+  effect, and that a transaction is one undo step. Until 1.0, `plugin check` and `plugin test` on the
+  current WIT are the kit; from 1.0 on, SolidCraft's own CI also loads the pilots built against the
+  previous WIT minor.
+- **Development mode.** `solidcraft --plugin-dev <dir>` loads one plugin folder without approval for
+  that run only, marks it as a development plugin on the Plugins page and wherever its entries show,
+  and reloads it when its component file changes. It is a command-line flag, never stored in
+  preferences, and it lands in S2 with the host, since that is how the pilots will be written.
+- **Translations.** A plugin may ship `locales/<lang>.json` next to plugin.json with its own labels
+  (entries, panel, secrets) under the app's language ids, falling back to the English in
+  plugin.json. The strings stay plain text with the same caps.
+
 ## 6. Host behaviour
 
 ### 6.1 Approval and loading
@@ -517,10 +551,13 @@ the right outcome for a plugin it cannot run.
   N seconds per change" (`limits.transaction_seconds`), "may use up to N MiB of memory"
   (`limits.memory_mib`); for an importer, "opens files with these extensions: ..." and, with
   `reads_input_folder`, "may read other files in the same folder as a file you import". The approval stores a hash of
-  (`commands`, `permissions`, `limits`, `world`, and each entry's `name` and `kind`) in preferences
+  (`commands`, `permissions`, `limits`, `world`, and each entry's `name`, `kind` and `effect`) in preferences
   (`approved_plugins: {id: hash}`, max 256 entries). A plugin update that changes any of these needs a
   new approval; a code-only update with the same permissions does not (the sandbox bounds it to what was
   approved). `disabled_plugins` keeps its meaning.
+- An update never opts the user in. An update that changes what was approved (a new entry, a changed
+  kind or effect, new permissions) stops the plugin until it is approved again, and the Plugins page
+  lists exactly what is new or changed before any of it appears in menus or command listings.
 - Who tells the host: the host never reads preferences itself. Whoever installs it hands it the policy
   through `PluginHost::set_policy(approved: id -> hash, disabled: ids)`. The desktop app passes
   `approved_plugins` and `disabled_plugins` at start and again whenever the Plugins page changes them;
@@ -670,6 +707,16 @@ Every `engine.run` from a plugin passes these checks in order:
    `selection` (`select.*`) and `camera` (`view.apply`); adding a command to the list needs that
    test to pass.
 
+6. An `action` entry with `effect: read` may run only the inspect part of the handler-safe list
+   (`document.inspect`, `document.metadata`, `model.faces`, `model.edges`, `engine.describe`) and
+   gets `denied` from `host.request-execute`; its network rights are unchanged. The agent chat gate
+   runs `read` entries without asking, and treats `edit` entries (every transaction, and actions
+   without `effect: read`) like the edits it already asks about.
+
+Plugins never call each other: `plugin.*` is on the deny list (rule 2) and no import reaches another
+plugin. If plugins ever need to cooperate, it will be through host events, where a failing listener
+never fails the caller.
+
 Handler calls are queued to the UI thread and served in the next frame (the worker asks the UI to
 repaint). A command refused by the policy returns `denied` with the rule that refused it.
 
@@ -704,6 +751,13 @@ sees it): a JSON object from key to base64 value, rewritten atomically (temp fil
 Windows device name (`con`, `nul`) are just keys; a key must still start with a letter or digit
 (`[a-z0-9][a-z0-9._-]{0,127}`), anything else is `invalid`. Removing a plugin from the
 Plugins page offers to delete its data.
+
+Across versions: `store.previous-version()` tells the first calls of an updated plugin which version
+last ran here, so it can migrate its data; setup that runs only at install is not enough, because
+older installs would miss it. Store layouts and the plugin's design metadata must stay readable by
+every later version (additive changes only; the author guide says so). The host never removes
+`plugin.<id>` metadata: a design that carries it opens, edits and saves with the plugin missing,
+turned off or at another version, and the metadata comes back unchanged.
 
 ### 6.7 Panels and pins (ui-egui)
 
@@ -1039,10 +1093,10 @@ until then.
 | Step | Content | Done when |
 |---|---|---|
 | S1 | this document and `wit/solidcraft-plugin.wit` (this PR); docs/plugins.md's milestone 1 then points here | maintainer agrees on the shape in #1221 |
-| S2 | engine seam + `plugin.run` + `crates/plugin-host` (load, limits, WASI context, transactions, policy, store) + plugin.json v1 parsing and approval on the Plugins page | tests T1-T9 pass; size and compile time measured |
+| S2 | engine seam + `plugin.run` + `crates/plugin-host` (load, limits, WASI context, transactions, policy, store) + plugin.json v1 parsing, its generated schema and `solidcraft-cli plugin check`, `--plugin-dev`, and approval on the Plugins page | tests T1-T9 pass; size and compile time measured |
 | S3 | handlers, `net` + secrets, `host.request-execute`, action entries and `plugin.act`, panel window, pins, `plugin.panel`, `plugin.list` | tests T10-T15; screenshots of a test panel |
 | S3b | importers (9a): `input`, `output`, `plugin.import`, routing of `formats` in `doc.open`, `reads_input_folder`; the `@unstable` mark goes once a real importer runs through it | tests T17-T20 |
-| S4 | spur-gear example + author guide + CI job that builds `examples/plugins/*` for `wasm32-wasip2` and runs the integration test | T16 |
+| S4 | spur-gear example + author guide + `solidcraft-cli plugin test` + CI job that builds `examples/plugins/*` for `wasm32-wasip2` and runs `plugin test` on them | T16, T22 |
 | S5 | review-notes plugin | section 9 acceptance |
 | S6 | rename the package to `solidcraft:plugin@1.0.0` after S4 and S5 shipped in a release and at least one outside author built against 0.x | API freeze note in docs |
 
@@ -1070,6 +1124,17 @@ feature), so they need no guest toolchain.
   on the background thread: the Plugins page keeps drawing frames while it shows "checking...", and a
   `plugin.run` during the compile fails at once with "still loading".
 - T9 plugin.json v1: every rule in section 5 has a refusal case; a listing-only folder still lists.
+- T21 a design saved with `plugin.review-notes` metadata under plugin 0.1.0 opens with 0.2.0 loaded
+  and with the plugin turned off; after an edit and a save the metadata is byte-identical.
+  `store.previous-version()` returns "0.1.0" on 0.2.0's first call and "0.2.0" once a call of it
+  returned, and still "0.1.0" when that first call trapped.
+- T22 `solidcraft-cli plugin check` refuses every rule of section 5 with the Plugins page's messages,
+  and the schema it uses equals the one generated from the host types; `plugin test` fails an entry
+  that traps, goes beyond its rights or makes two undo steps.
+- T23 an `effect: read` entry gets `denied` for `select.set` and for `host.request-execute`; the agent
+  chat gate runs it without asking and asks before an `edit` entry.
+- T24 an update that adds an entry stops the plugin until it is approved again, and the Plugins page
+  lists the new entry; an update that changes only code keeps running.
 - T10 a handler calling an undoable command, or a `noundo` command off the handler-safe list
   (`browser.visibility`, `component.activate`), gets `denied` even when plugin.json lists it;
   `select.set` works. The handler-safe list test of 6.4 rule 5 passes.
@@ -1135,8 +1200,8 @@ Frozen depth for 0.1 (findings beyond this are out of scope, not defects):
   themselves (handled by keeping wasmtime current); a plugin wasting its own approved budgets (it is
   stopped by the limits, nothing more); what a plugin does with data on an origin the user approved;
   social engineering on the approval screen beyond showing the permissions plainly.
-- In: escaping the permissions; reading files other than an imported one (and its folder with
-  `reads_input_folder`); writing files; reaching servers other than those that hold
+- In: escaping the permissions; reaching another plugin's entries or data; reading files other than
+  an imported one (and its folder with `reads_input_folder`); writing files; reaching servers other than those that hold
   a certificate for an approved origin (section 6.5);
   reading secrets; editing the design from a handler; leaving a partial edit; growing app memory or
   time without bound; crashing through any host function input.

@@ -46,6 +46,11 @@ interface store {
     set: func(key: string, value: list<u8>) -> result<_, plugin-error>;
     remove: func(key: string) -> result<_, plugin-error>;
     keys: func() -> result<list<string>, plugin-error>;
+
+    /// The plugin version that last ran on this computer, or none on the first run. The
+    /// host records a new version only after one of its calls returns without a trap, so a
+    /// migration that fails runs again next time. Works without the `store` permission.
+    previous-version: func() -> option<string>;
 }
 
 /// HTTPS to the origins plugin.json names. Handlers only; a transaction gets `denied`.
