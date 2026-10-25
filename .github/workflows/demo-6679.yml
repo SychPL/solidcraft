@@ -1,0 +1,32 @@
+# Fork-only: records the #6679 demo (Assemble > Move on jointed parts) from the desktop app under
+# Xvfb on a GitHub-hosted runner (never upstream).
+name: Demo 6679 (fork only)
+on:
+  push:
+    branches: [fork-demo-6679]
+permissions:
+  contents: read
+jobs:
+  demo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Xvfb, a software Vulkan driver and Pillow
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1 python3-pil
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: Record
+        run: python3 -I .github/demo-6679/demo.py "$PWD/target/ci/solidcraft" "$PWD/demo"
+      - if: always()
+        run: tail -c 12000 demo/app.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: demo-6679
+          path: demo/
