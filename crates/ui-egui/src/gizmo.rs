@@ -346,7 +346,7 @@ pub fn show(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, id: egui::I
             let from = ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
             let c = t.center;
             // Steps from preferences, kept sane: 0.001° to 90°.
-            let sane = |v: f64| v.max(1e-3).min(90.0).to_radians();
+            let sane = |v: f64| v.clamp(1e-3, 90.0).to_radians();
             let steps = t.joint.map(|f| (sane(f.turn_steps.0), sane(f.turn_steps.1)));
             let mut s = State {
                 handle: h,
