@@ -390,11 +390,10 @@ fn close_drag(app: &mut SolveApp) {
     }
 }
 
-/// The readout shown: during a drag, and after it until the design changes (an undo).
+/// The readout shown: while the design is the one the drag's last frame left (not after an undo).
 fn shown_readout(app: &SolveApp) -> Option<(f64, bool, Option<&'static str>)> {
     let h = app.viewport.joint_move.as_ref()?;
-    let current = h.shown_on.as_ref().is_some_and(|d| Arc::ptr_eq(d, &app.session.doc));
-    h.readout.filter(|_| h.drag.is_some() || current)
+    h.readout.filter(|_| h.shown_on.as_ref().is_some_and(|d| Arc::ptr_eq(d, &app.session.doc)))
 }
 
 /// The travel since the drag began, beside the handles, and why it stopped short.
