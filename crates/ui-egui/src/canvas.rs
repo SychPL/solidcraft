@@ -279,8 +279,9 @@ pub(crate) fn owns_pointer(app: &SolveApp, proj: &Proj, p: Pos2) -> bool {
         || (app.dialog.is_none()
             && app.tool.is_none()
             && crate::browser::occurrence_triad_model(app)
-                .or_else(|| crate::joint_drag::triad(app))
-                .is_some_and(|t| crate::gizmo::contains_pointer(proj, &t, p)))
+                .into_iter()
+                .chain(crate::joint_drag::triad(app))
+                .any(|t| crate::gizmo::contains_pointer(proj, &t, p)))
 }
 
 /// Draw the manipulator and the value box (called by the viewport after the model is drawn).

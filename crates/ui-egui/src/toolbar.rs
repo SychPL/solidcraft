@@ -2101,15 +2101,14 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 if crate::sketch_text_move::cancel_drag(app) || crate::occurrence_drag::cancel(app) {
                     continue;
                 }
-                if app.tool.is_none() && app.dialog.is_none() && crate::joint_drag::cancel(app, ctx) {
-                    continue;
-                }
                 if crate::select_other::is_open(app) {
                     crate::select_other::close(app);
                 } else if app.tool.is_some() {
                     crate::tools::finish(app);
                 } else if app.dialog.is_some() {
                     crate::dialogs::cancel(app);
+                } else if crate::joint_drag::cancel(app, ctx) {
+                    // Assemble ▸ Move: the drag goes back, or the handles close.
                 } else if !app.session.selection.is_empty() || app.session.active_sketch.is_none() {
                     app.tree.picked_joints.clear();
                     let _ = app.run("select.clear", json!({}));
