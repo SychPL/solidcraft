@@ -1,0 +1,101 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#6837 (#6679) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-6679
+on:
+  push:
+    branches: [fork-ci-6679]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+      - name: Clippy (doc, engine, ui-egui)
+        if: always()
+        run: cargo clippy -p solidcraft-doc -p solidcraft-engine -p solidcraft-ui-egui --all-targets --profile ci --locked -- -D warnings
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: The tests this change touches
+        run: >-
+          cargo nextest run -p solidcraft-doc -p solidcraft-engine -p solidcraft-ui-egui --cargo-profile ci --locked --profile ci --no-fail-fast
+          -E 'test(/joint|gizmo|occurrence_drag|occurrence_gizmo|dialogs_move|move_|motion|prefs|workspace|i18n|menu|value_axes|freedom|drive/)'
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # The GPU path tracer's own tests (no engine code) run out of memory or time on 4 vCPUs.
+      - name: Tests (the pull request's default filter)
+        run: >-
+          cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4
+          -E 'default() - (package(solidcraft-gpu) & test(/^path::/))'
