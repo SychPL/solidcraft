@@ -142,8 +142,9 @@ Commands never open dialogs when run this way. `solidcraft-cli commands` prints 
 ### Following the design
 
 A program that follows the open design (a renderer kept in step, a live link) asks
-`document.revision`, which only reads and answers at once, also while a slow command computes
-or the agent cursor acts one out, and exports only when the answer changes (#6646):
+`document.revision`, which only reads and does not wait behind design changes (a slow command
+computing, a file loading, the agent cursor acting one out), and exports only when the answer
+changes (#6646):
 
 ```text
 {"id":1,"method":"document.revision","token":"…"}

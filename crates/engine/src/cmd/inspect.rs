@@ -1,6 +1,7 @@
 //! Inspection: measure bodies, describe the document, sketches and model topology.
 
 use std::collections::BTreeMap;
+use std::hash::{BuildHasher, RandomState};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
@@ -245,13 +246,18 @@ pub(crate) struct Followed {
     revision: u64,
 }
 
-/// A new design's id: when this run started, then a number, so no two designs of one run, or
-/// of two runs, have the same.
+/// A new design's id: one for this run, then a number, so no two designs of one run, or of two
+/// runs, have the same.
 pub(crate) fn new_document_id() -> String {
-    static RUN: OnceLock<u128> = OnceLock::new();
+    static RUN: OnceLock<u64> = OnceLock::new();
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    let run = RUN.get_or_init(|| web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
-    format!("{run:x}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    let run = RUN.get_or_init(|| {
+        let started = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        // Hashed with this process's random keys (where the system has them), so two runs differ
+        // even with the clock set back.
+        RandomState::new().hash_one(started)
+    });
+    format!("{run:016x}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 /// `document.revision`: the design's id and the revision of what it holds now, a new one when it
