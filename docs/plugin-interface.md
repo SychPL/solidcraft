@@ -756,9 +756,32 @@ No error path panics; every wasmtime call returns a `Result` that the host maps.
 `plugin-host` depends on engine only; ui-egui reaches plugins through `Session`'s trait object, so the
 two L5 crates do not depend on each other. `cargo xtask layers` gets one new row.
 
-Dependency cost: wasmtime 50 with Cranelift and `wasmtime-wasi` add about 130 crates to the build
-graph (tokio is already in it). Binary size growth is measured in the S2 PR; if it is unacceptable,
-the fallback is wasmtime's Pulley interpreter (smaller, slower) behind the same API.
+Dependency cost, measured on `main` on 2026-10-25 (Windows 11, i9-13900K with 32 threads, Rust 1.99,
+wasmtime 50, the app's `--release` profile, `CARGO_BUILD_JOBS=6`; the probe that links the host code
+into the app is on the fork branch `SychPL/solidcraft` `exp/plugin-host-cost`):
+
+| Host linked into `solidcraft.exe` (133.6 MiB without it) | Growth |
+|---|---|
+| Cranelift + WASI p2 (as proposed) | +15.5 MiB (+11.6%) |
+| Cranelift, no WASI | +13.1 MiB (+9.8%) |
+| Winch + WASI p2 | +15.1 MiB (+11.3%) |
+| Cranelift + Winch + WASI p2 | +16.8 MiB (+12.5%) |
+
+- Most of the growth is the runtime and the component model; the compiler choice changes it by about
+  0.4 MiB and WASI adds 2.5 MiB, so dropping WASI saves little and would shut out toolchains that need
+  it (section 4).
+- A clean build grows from 7 min 53 s to 9 min 13 s (+80 s, +17%), and from 341 to 407 crates. The
+  first build after the change also rebuilds much of the tree, because wasmtime turns on extra
+  features in shared dependencies.
+- Compiling a 59.5 MiB module (the whole SolidCraft engine built to wasm, about 50k functions) takes
+  3.9 s with Cranelift on 32 threads (46 s on one) at a 1.6 GB peak, and 1.4 s with Winch (4.6 s on
+  one) at 1.3 GB. Peak memory is roughly 18-26 times the module size: about 0.3-0.4 GB at the 16 MiB
+  cap of 6.2 and 1.2-1.7 GB at the 64 MiB target. Offering Winch for large components is the cheaper
+  way to raise that cap.
+- For authors who want to link SolidCraft crates into a plugin: the engine crates do not build for
+  `wasm32-wasip2` on stable Rust today (`typed-path` 0.12.3 enables a nightly feature there), and on
+  `wasm32-unknown-unknown` they pull in wasm-bindgen imports a component cannot satisfy. Plugins that
+  only use the command API are not affected.
 
 ## 8. Pilot A: spur gear (`command-plugin`)
 
