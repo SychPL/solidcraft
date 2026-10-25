@@ -60,6 +60,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
     // Assemble ▸ Move's joint rings (#6679).
     ui_kit::settings_section(ui, "assembly_move", app.tr("prefs.assembly_move"), |ui| {
+        setting::assembly_move_freedoms(app, ui);
         ui_kit::settings_form(ui, t.space_24 * 7.0 + t.space_2, |ui| {
             ui_kit::row(ui, app.tr("prefs.joint_turn_step"), |ui| {
                 ui_kit::settings_number(ui, &mut app.preferences.joint_turn_step, 0.001..=90.0, 0.1);

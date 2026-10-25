@@ -548,6 +548,9 @@ preference_settings! {
     /// ring, and of `joint_turn_fine_step` beyond the ring's guide (#6679).
     joint_turn_step: f32 = 10.0, PAGE_DESIGN;
     joint_turn_fine_step: f32 = 0.1, PAGE_DESIGN;
+    /// Move on a part that joints place drags only the freedoms its joint allows (#6679); off,
+    /// Move moves it freely as before.
+    assembly_move_freedoms: bool = true, PAGE_DESIGN => check_id("prefs.assembly_move_freedoms");
     /// Up/Down and the wheel over a focused value field step its plain number (`value_step`,
     /// #2320). Off by default: the keys move the text cursor and the wheel scrolls, as before.
     step_values: bool = false, PAGE_DESIGN => check_id("ui.step_values");

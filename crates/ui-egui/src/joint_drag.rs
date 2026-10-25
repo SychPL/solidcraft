@@ -202,6 +202,9 @@ fn freedoms(app: &mut SolveApp, occurrence: u64) -> Option<Value> {
 /// joint places it (a free part, or a grounded one joined to nothing): the usual Move goes ahead.
 pub fn open(app: &mut SolveApp, occurrence: u64) -> bool {
     close(app);
+    if !app.preferences.assembly_move_freedoms {
+        return false;
+    }
     let Some(r) = freedoms(app, occurrence) else { return false };
     let jointed = app.session.doc.assembly.joints.iter().any(|j| !j.suppressed && (j.a.occurrence == occurrence || j.b.occurrence == occurrence));
     if r["placed"] != true && !(jointed && r["grounded"] == true) {
@@ -651,6 +654,12 @@ mod tests {
         move_part(&mut h, "Loose");
         assert!(h.app.viewport.joint_move.is_none() && h.app.dialog.is_some());
         crate::dialogs::cancel(&mut h.app);
+        // With the preference off, Move on a jointed part is the usual Move.
+        h.app.preferences.assembly_move_freedoms = false;
+        move_part(&mut h, "Arm");
+        assert!(h.app.viewport.joint_move.is_none() && h.app.dialog.is_some());
+        crate::dialogs::cancel(&mut h.app);
+        h.app.preferences.assembly_move_freedoms = true;
         // The browser's Move/Copy on the welded plate warns and closes another part's free Move.
         let menu = |h: &mut Harness, part: &str| {
             let target = crate::context_menu::Target::Occurrence { path: vec![occ(h, part)] };
