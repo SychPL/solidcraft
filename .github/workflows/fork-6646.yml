@@ -76,7 +76,9 @@ jobs:
           tool: cargo-nextest
       # The GPU path tracer's own tests (no engine code) run out of memory or time on 4 vCPUs.
       - name: Tests (the pull request's default filter)
-        run: cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \n            -E 'default() - (package(solidcraft-gpu) & test(/^path::/))'
+        run: >-
+          cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4
+          -E 'default() - (package(solidcraft-gpu) & test(/^path::/))'
   transcript:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
@@ -87,7 +89,7 @@ jobs:
       - name: Install Xvfb and a software Vulkan driver
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth \n            libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
       - run: scripts/ci/build-jobs.sh
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build -p solidcraft --profile ci --locked
