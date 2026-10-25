@@ -30,6 +30,7 @@ mod native_frame;
 mod native_menu;
 #[cfg(target_os = "macos")]
 mod open_documents;
+mod plugin_probe;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod space_mouse;
 mod startup;
@@ -639,6 +640,13 @@ fn main() -> eframe::Result {
         match a.as_str() {
             "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
             "--sample" => sample = true,
+            "--plugin-probe" => {
+                let rest: Vec<String> = args.by_ref().collect();
+                if let Err(e) = plugin_probe::run(&rest) {
+                    eprintln!("plugin probe: {e}");
+                }
+                return Ok(());
+            }
             "--safe-mode" => safe_mode = true,
             "--version" | "-V" => {
                 println!("solidcraft {}", env!("CARGO_PKG_VERSION"));
