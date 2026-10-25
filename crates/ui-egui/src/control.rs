@@ -391,6 +391,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         }
         "engine.commands" => wrap(app.session.execute("engine.commands", &json!({})).map_err(|e| e.to_string())),
         "document.inspect" => wrap(app.session.execute("document.inspect", p).map_err(|e| e.to_string())),
+        "document.revision" => wrap(app.session.execute("document.revision", p).map_err(|e| e.to_string())),
         "ui.messages" => ok(crate::messages::control(app, p)),
         "ui.inspect" => ok(json!({
             "render": crate::render_workspace::inspect_state(app),
@@ -1156,6 +1157,61 @@ mod tests {
             out.textures_delta.clear();
         }
         assert!(app.synthetic.is_empty());
+    }
+
+    /// #6646: `document.revision` names the active design and what it holds. The revision moves on
+    /// an edit, a parameter, a hide, an undo and a redo, never on a read or a selection, and never
+    /// comes back; the id stays through edits and is another for another tab of the same name.
+    #[test]
+    fn document_revision_follows_the_design_and_tells_tabs_apart() {
+        fn now(h: &mut crate::scenario::Harness) -> (String, u64) {
+            let r = h.call("document.revision", json!({}));
+            assert_eq!(r["ok"], true, "{r}");
+            (r["result"]["document_id"].as_str().unwrap_or_default().to_string(), r["result"]["revision"].as_u64().unwrap_or_default())
+        }
+        fn run(h: &mut crate::scenario::Harness, command: &str, params: Value) {
+            let r = h.call("engine.execute", json!({"command": command, "params": params}));
+            assert_eq!(r["ok"], true, "{command}: {r}");
+        }
+        let mut h = crate::scenario::Harness::new();
+        let (id, mut last) = now(&mut h);
+        assert!(!id.is_empty() && last > 0, "{id} {last}");
+        // Reads and a selection leave it as it is (the view's own revision moves on a selection).
+        let view = h.app.session.revision;
+        h.call("document.inspect", json!({}));
+        h.call("ui.inspect", json!({}));
+        run(&mut h, "select.clear", json!({}));
+        assert!(h.app.session.revision > view);
+        assert_eq!(now(&mut h), (id.clone(), last));
+        for (command, params) in [
+            ("solid.box", json!({"length": 10, "width": 10, "height": 10})),
+            ("parameters.add", json!({"name": "w", "expression": "12 mm"})),
+            ("browser.visibility", json!({"folder": "bodies", "visible": false})),
+            ("edit.undo", json!({})),
+            ("edit.redo", json!({})),
+        ] {
+            run(&mut h, command, params);
+            let (same, revision) = now(&mut h);
+            assert_eq!(same, id, "{command} keeps the id");
+            assert!(revision > last, "{command}: {revision} after {last}");
+            assert_eq!(now(&mut h).1, revision, "asking again after {command}");
+            last = revision;
+        }
+        // Another tab with the same name is another design; back on the first, its revision is
+        // the one it had.
+        h.call("ui.documents", json!({"action": "new"}));
+        let tabs = h.call("ui.documents", json!({}))["result"]["documents"].clone();
+        assert_eq!(tabs[0]["name"], tabs[1]["name"], "{tabs}");
+        let (other, other_revision) = now(&mut h);
+        assert_ne!(other, id);
+        assert!(other_revision > last, "{other_revision} after {last}");
+        h.call("ui.documents", json!({"action": "switch", "index": 0}));
+        assert_eq!(now(&mut h), (id.clone(), last));
+        // A design started in its place is another one too, and its revision is new.
+        run(&mut h, "file.new", json!({}));
+        let (fresh, revision) = now(&mut h);
+        assert!(fresh != id && fresh != other, "{fresh}");
+        assert!(revision > other_revision, "{revision} after {other_revision}");
     }
 
     fn render(app: &mut SolveApp, path: &std::path::Path) -> Vec<u8> {

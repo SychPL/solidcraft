@@ -1,0 +1,11 @@
+{
+  "en": {
+    "cmd.document_revision": "Design Revision"
+  },
+  "de": {
+    "cmd.document_revision": "Konstruktionsrevision"
+  },
+  "pl": {
+    "cmd.document_revision": "Rewizja projektu"
+  }
+}

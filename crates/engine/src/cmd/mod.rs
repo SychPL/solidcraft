@@ -46,7 +46,7 @@ mod component_link;
 mod config;
 mod file;
 mod frame;
-mod inspect;
+pub(crate) mod inspect;
 mod interference;
 pub(crate) mod joints;
 mod libraries;

@@ -285,6 +285,11 @@ pub struct Session {
     pub log: Vec<String>,
     /// Increments on every document change (views use it to refresh).
     pub revision: u64,
+    /// This open design's id for programs that follow it (`document.revision`, #6646): kept
+    /// while it stays open, through saves and renames; another for each design started or opened.
+    pub document_id: String,
+    /// The design as `document.revision` last saw it, and the revision it gave it.
+    pub(crate) followed: Option<cmd::inspect::Followed>,
     /// Project a face's edges into a sketch created on it (the default; `sketch.auto_project`).
     pub auto_project: bool,
     /// How calls that break a command's parameter contract are treated (off by default). It
@@ -470,6 +475,8 @@ impl Session {
             open_preview: None,
             log: Vec::new(),
             revision: 1,
+            document_id: cmd::inspect::new_document_id(),
+            followed: None,
             auto_project: true,
             param_check: schema::ParamCheck::Off,
             live_links: None,
@@ -1131,6 +1138,8 @@ impl Session {
             saved: self.saved.clone(),
             log: Vec::new(),
             revision: self.revision,
+            document_id: self.document_id.clone(),
+            followed: None,
             auto_project: self.auto_project,
             param_check: self.param_check,
             live_links: None,
