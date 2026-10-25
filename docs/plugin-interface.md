@@ -501,6 +501,7 @@ still refused):
 | `limits.component_mib` | 1-16 in 0.1, default 16; the maximum rises only after S2's measurement (6.2) |
 | `formats` | `importer-plugin` only: 1-16 file extensions (`[a-z0-9]{1,16}`, without the dot), each with a `label`; an extension that another enabled importer already lists makes the later plugin refuse to load, with a message naming both |
 | `reads_input_folder` | `importer-plugin` only, default false: lets `input.read` open files next to the imported one (assemblies, 9a); shown on the approval screen |
+| `surfaces` | 0-8 places the plugin shows up, each `{kind, label?, entry?}`; rules in 9b |
 | `limits.transaction_seconds` | 1-120, default 10 |
 
 No `icon` in 0.1: plugin artwork would bypass the asset rules. Panels use a generic plugin icon from
@@ -551,13 +552,15 @@ the right outcome for a plugin it cannot run.
   N seconds per change" (`limits.transaction_seconds`), "may use up to N MiB of memory"
   (`limits.memory_mib`); for an importer, "opens files with these extensions: ..." and, with
   `reads_input_folder`, "may read other files in the same folder as a file you import". The approval stores a hash of
-  (`commands`, `permissions`, `limits`, `world`, and each entry's `name`, `kind` and `effect`) in preferences
+  (`commands`, `permissions`, `limits`, `world`, each entry's `name`, `kind` and `effect`, and each surface's `kind` and `entry`) in preferences
   (`approved_plugins: {id: hash}`, max 256 entries). A plugin update that changes any of these needs a
   new approval; a code-only update with the same permissions does not (the sandbox bounds it to what was
   approved). `disabled_plugins` keeps its meaning.
 - An update never opts the user in. An update that changes what was approved (a new entry, a changed
   kind or effect, new permissions) stops the plugin until it is approved again, and the Plugins page
-  lists exactly what is new or changed before any of it appears in menus or command listings.
+  lists exactly what is new or changed before any of it appears in menus, surfaces (9b) or command
+  listings. The approval screen lists the surfaces a plugin adds, in plain words ("adds a tab to
+  Open design").
 - Who tells the host: the host never reads preferences itself. Whoever installs it hands it the policy
   through `PluginHost::set_policy(approved: id -> hash, disabled: ids)`. The desktop app passes
   `approved_plugins` and `disabled_plugins` at start and again whenever the Plugins page changes them;
@@ -1088,14 +1091,44 @@ until then.
 - **Cost.** A large all-formats importer pays its compile on every app start (no compiled-code cache,
   6.1); one plugin per format keeps that small.
 
+## 9b. Surfaces
+
+A plugin shows up where people already look through `surfaces` in plugin.json. It names a kind and
+what the surface fronts; the host draws it with the app's own widgets, theme, translations and
+accessibility, and the generic plugin icon (section 5). A plugin never draws, moves or reorders core UI.
+
+| `kind` | Worlds | Fronts | The host draws |
+|---|---|---|---|
+| `open-source` | `importer-plugin` | its `formats` | a tab in Open design with `label`, the formats it reads and a file picker (a folder note with `reads_input_folder`); it runs `plugin.import {plugin, path}` and shows the report, with Open and Cancel, before the design opens |
+| `import-menu` | `importer-plugin` | its `formats` | the same, as an item under File > Import |
+| `toolbar-entry` | `command-plugin`, `panel-plugin` | `entry` | a button that runs `plugin.<id>.<entry>`, on the plugins' ribbon panel the host picks; in 0.1 only for an entry that needs no parameters. This is the Design > Utilities case of #4933, and its placement rules should stay in step with that proposal |
+| `panel` | `panel-plugin` | its panel | a button next to the toolbar entries that opens `plugin.panel {plugin}` |
+
+- **Every surface runs a command** (`plugin.import`, `plugin.<id>.<entry>`, `plugin.panel`), so
+  nothing a surface does is out of reach of scripts, the CLI and MCP.
+- **The host owns placement.** Surfaces are placed in host order (plugin id, then entry or kind), never
+  in manifest order. A surface is identified by its plugin id plus `entry` (or `kind`), so it can never
+  take a core slot or another plugin's. Caps: per plugin, 8 surfaces, at most one `open-source` and one
+  `import-menu`; across plugins, 8 tabs in Open design, 16 items in File > Import and 32 buttons on the
+  plugins' panel. Past a cap, the surfaces later in host order are not placed, and neither is one whose
+  label equals a core item's in the same place; the Plugins page says which and why, and their commands
+  stay callable.
+- **Labels** are plugin text, shown as plain text: 1-40 chars, no control characters, translated
+  through `locales/` (5a). Each surface names its plugin in its tooltip, and a `--plugin-dev` plugin's
+  surfaces are marked as such, so people can tell core UI from plugin UI.
+- **Lifetime.** Surfaces appear only while the plugin is approved, turned on and loaded, and disappear
+  as soon as it stops (6.1). A new or changed surface needs a new approval (6.1).
+- A `kind` the plugin's world does not allow, or an `entry` that is not listed, refuses the plugin
+  (plugin.json rules, section 5).
+
 ## 10. Steps (one PR each)
 
 | Step | Content | Done when |
 |---|---|---|
 | S1 | this document and `wit/solidcraft-plugin.wit` (this PR); docs/plugins.md's milestone 1 then points here | maintainer agrees on the shape in #1221 |
 | S2 | engine seam + `plugin.run` + `crates/plugin-host` (load, limits, WASI context, transactions, policy, store) + plugin.json v1 parsing, its generated schema and `solidcraft-cli plugin check`, `--plugin-dev`, and approval on the Plugins page | tests T1-T9 pass; size and compile time measured |
-| S3 | handlers, `net` + secrets, `host.request-execute`, action entries and `plugin.act`, panel window, pins, `plugin.panel`, `plugin.list` | tests T10-T15; screenshots of a test panel |
-| S3b | importers (9a): `input`, `output`, `plugin.import`, routing of `formats` in `doc.open`, `reads_input_folder`; the `@unstable` mark goes once a real importer runs through it | tests T17-T20 |
+| S3 | handlers, `net` + secrets, `host.request-execute`, action entries and `plugin.act`, panel window, pins, `plugin.panel`, `plugin.list`; `toolbar-entry` and `panel` surfaces (9b) | tests T10-T15, T25, T26; screenshots of a test panel |
+| S3b | importers (9a): `input`, `output`, `plugin.import`, routing of `formats` in `doc.open`, `reads_input_folder`; `open-source` and `import-menu` surfaces (9b); the `@unstable` mark goes once a real importer runs through it | tests T17-T20, T27 |
 | S4 | spur-gear example + author guide + `solidcraft-cli plugin test` + CI job that builds `examples/plugins/*` for `wasm32-wasip2` and runs `plugin test` on them | T16, T22 |
 | S5 | review-notes plugin | section 9 acceptance |
 | S6 | rename the package to `solidcraft:plugin@1.0.0` after S4 and S5 shipped in a release and at least one outside author built against 0.x | API freeze note in docs |
@@ -1135,6 +1168,13 @@ feature), so they need no guest toolchain.
   chat gate runs it without asking and asks before an `edit` entry.
 - T24 an update that adds an entry stops the plugin until it is approved again, and the Plugins page
   lists the new entry; an update that changes only code keeps running.
+- T25 surfaces are placed in host order whatever the manifest order; a ninth plugin's Open design tab,
+  a surface whose label equals a core item's, and a surface naming another plugin's entry are not
+  placed, and the Plugins page says why; their commands still run from the command line.
+- T26 a `toolbar-entry` button runs `plugin.<id>.<entry>` exactly as `engine.execute` does (same
+  result, one undo step); turning the plugin off removes the button in the same frame.
+- T27 an `open-source` tab imports a file through `plugin.import`, shows the report and opens the
+  design only on Open; an update that adds an `open-source` surface stops the plugin until approved.
 - T10 a handler calling an undoable command, or a `noundo` command off the handler-safe list
   (`browser.visibility`, `component.activate`), gets `denied` even when plugin.json lists it;
   `select.set` works. The handler-safe list test of 6.4 rule 5 passes.
