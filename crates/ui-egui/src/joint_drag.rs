@@ -145,6 +145,9 @@ struct Freedom {
 struct HandleDrag {
     index: usize,
     start: f64,
+    /// The value the last frame asked for: a frame asking the same runs nothing (a handle
+    /// pressed and held still leaves no undo step).
+    asked: f64,
     /// What Escape goes back to (`edit.checkpoint`).
     checkpoint: Option<u64>,
     /// The drag's undo step, once a frame moved the part (`occurrence_drag::run_frame`).
@@ -324,7 +327,7 @@ fn drag(app: &mut SolveApp, g: gizmo::Drag) {
     // mid-drag).
     if g.started {
         let checkpoint = app.session.execute("edit.checkpoint", &json!({})).ok().and_then(|r| r["checkpoint"].as_u64());
-        h.drag = Some(HandleDrag { index: f.index, start: f.value, checkpoint, step: None });
+        h.drag = Some(HandleDrag { index: f.index, start: f.value, asked: f.value, checkpoint, step: None });
     }
     let Some(mut d) = h.drag.take().filter(|d| d.index == f.index) else { return };
     let travel = match g.change {
@@ -332,29 +335,33 @@ fn drag(app: &mut SolveApp, g: gizmo::Drag) {
         Change::Rotate { angle, .. } => angle.to_degrees(),
     };
     let target = d.start + f.sign * travel;
-    let params = json!({"joint": h.joint, "index": f.index, "value": target, "quiet": true, "continuous": true});
-    match crate::occurrence_drag::run_frame(app, &mut d.step, "joint.drive", params) {
-        // Undo took the drag's step: the drag ends there.
-        None => {
-            h.readout = None;
-            app.viewport.joint_move = Some(Handles { drag: Some(d), ..h });
-            return close_drag(app);
+    // A frame asking what the last one asked runs nothing (a handle held still leaves no undo step).
+    if target != d.asked {
+        d.asked = target;
+        let params = json!({"joint": h.joint, "index": f.index, "value": target, "quiet": true, "continuous": true});
+        match crate::occurrence_drag::run_frame(app, &mut d.step, "joint.drive", params) {
+            // Undo took the drag's step: the drag ends there.
+            None => {
+                h.readout = None;
+                app.viewport.joint_move = Some(Handles { drag: Some(d), ..h });
+                return close_drag(app);
+            }
+            Some(Ok(r)) => {
+                let got = r["values"].get(f.index).and_then(|v| v["value"].as_f64()).unwrap_or(d.start);
+                let stop = if (got - target).abs() <= 1e-6 {
+                    None
+                } else if r["stopped_by_contact"].is_object() {
+                    Some("assembly_move.contact")
+                } else if r["stopped_by_loop"].is_object() {
+                    Some("assembly_move.loop")
+                } else {
+                    Some("assembly_move.limit")
+                };
+                h.readout = Some((f.sign * (got - d.start), f.turn, stop));
+                h.shown_on = Some(app.session.doc.clone());
+            }
+            Some(Err(_)) => {}
         }
-        Some(Ok(r)) => {
-            let got = r["values"].get(f.index).and_then(|v| v["value"].as_f64()).unwrap_or(d.start);
-            let stop = if (got - target).abs() <= 1e-6 {
-                None
-            } else if r["stopped_by_contact"].is_object() {
-                Some("assembly_move.contact")
-            } else if r["stopped_by_loop"].is_object() {
-                Some("assembly_move.loop")
-            } else {
-                Some("assembly_move.limit")
-            };
-            h.readout = Some((f.sign * (got - d.start), f.turn, stop));
-            h.shown_on = Some(app.session.doc.clone());
-        }
-        Some(Err(_)) => {}
     }
     h.drag = Some(d);
     app.viewport.joint_move = Some(h);
