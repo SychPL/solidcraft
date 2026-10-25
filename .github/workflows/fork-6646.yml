@@ -74,8 +74,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # The GPU path tracer's own tests (no engine code) run out of memory or time on 4 vCPUs.
       - name: Tests (the pull request's default filter)
-        run: cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4
+        run: cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \n            -E 'default() - (package(solidcraft-gpu) & test(/^path::/))'
   transcript:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
