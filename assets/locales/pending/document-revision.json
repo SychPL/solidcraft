@@ -5,7 +5,13 @@
   "de": {
     "cmd.document_revision": "Konstruktionsrevision"
   },
+  "ja": {
+    "cmd.document_revision": "デザイン リビジョン"
+  },
   "pl": {
-    "cmd.document_revision": "Rewizja projektu"
+    "cmd.document_revision": "Wersja projektu"
+  },
+  "zh": {
+    "cmd.document_revision": "设计版本号"
   }
 }
