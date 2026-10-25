@@ -152,6 +152,9 @@ struct HandleDrag {
     checkpoint: Option<u64>,
     /// The drag's undo step, once a frame moved the part (`occurrence_drag::run_frame`).
     step: Option<Arc<Document>>,
+    /// The design as the drag began: until it has a step, a design changed under it (an undo)
+    /// ends the drag.
+    began: Arc<Document>,
 }
 
 const HANDLES: &str = "sc_joint_move";
@@ -328,7 +331,8 @@ fn drag(app: &mut SolveApp, g: gizmo::Drag) {
     // mid-drag).
     if g.started {
         let checkpoint = app.session.execute("edit.checkpoint", &json!({})).ok().and_then(|r| r["checkpoint"].as_u64());
-        h.drag = Some(HandleDrag { index: f.index, start: f.value, asked: f.value, checkpoint, step: None });
+        let began = app.session.doc.clone();
+        h.drag = Some(HandleDrag { index: f.index, start: f.value, asked: f.value, checkpoint, step: None, began });
         h.readout = Some((0.0, f.turn, None));
         h.shown_on = Some(app.session.doc.clone());
     }
@@ -338,6 +342,11 @@ fn drag(app: &mut SolveApp, g: gizmo::Drag) {
         Change::Rotate { angle, .. } => angle.to_degrees(),
     };
     let target = d.start + f.sign * travel;
+    if d.step.is_none() && !Arc::ptr_eq(&d.began, &app.session.doc) {
+        h.readout = None;
+        app.viewport.joint_move = Some(Handles { drag: Some(d), ..h });
+        return close_drag(app);
+    }
     // A frame asking what the last one asked runs nothing (a handle held still leaves no undo step).
     if target != d.asked {
         d.asked = target;
@@ -761,6 +770,30 @@ mod tests {
         let (travel, _, stop) = readout(&h).expect("a readout");
         assert!(travel > 2.5 && travel < 3.01 && stop == Some("assembly_move.contact"), "{travel} {stop:?}");
         assert!(rod(&h).dist(start + Vec3::X * travel) < 1e-6);
+    }
+
+    /// Undo pressed during a gesture that has not moved the part yet ends that gesture: it does
+    /// not carry on from the pose undo took away.
+    #[test]
+    fn undo_during_a_gesture_ends_it() {
+        let (mut h, end, ..) = hinged_arm();
+        run(&mut h, "joint.drive", json!({"joint": "Hinge", "value": 30}));
+        move_part(&mut h, "Arm");
+        let centre = crate::gizmo::handle_point("ball", Vec3::ZERO, 0.0).expect("handles");
+        let out = |turn: f64| {
+            let p = crate::gizmo::handle_point("rz", Vec3::ZERO, turn).unwrap_or(centre);
+            centre + (p - centre) * 1.5
+        };
+        let a = screen_of(&mut h, "rz", Vec3::ZERO, 0.0);
+        let b = screen(&mut h, out(0.0));
+        // Out from the ring along a radius: the angle stays, so nothing moves yet.
+        press_and_move(&mut h, a, b);
+        run(&mut h, "edit.undo", json!({}));
+        assert!(arm_at(&h, end).dist(end) < 1e-6, "undo takes the 30° back");
+        let c = screen(&mut h, out(20.0));
+        move_to(&mut h, b, c);
+        release(&mut h, c);
+        assert!(arm_at(&h, end).dist(end) < 1e-6, "the gesture ended with the undo: {:?}", arm_at(&h, end));
     }
 
     /// Escape with no drag under way closes the handles.
