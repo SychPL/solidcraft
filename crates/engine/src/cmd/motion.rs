@@ -456,8 +456,8 @@ fn drive_with_contact(s: &mut Session, want: &[(u64, Vec<f64>)], given: &BTreeSe
 }
 
 /// Drive one joint (joint.drive), honouring contact sets.
-pub fn drive_joint(s: &mut Session, id: u64, q: Vec<f64>, given: usize) -> Result<Value> {
-    let given = (0..given.min(q.len())).map(|i| (id, i)).collect();
+pub fn drive_joint(s: &mut Session, id: u64, q: Vec<f64>, given: &[usize]) -> Result<Value> {
+    let given = given.iter().filter(|i| **i < q.len()).map(|i| (id, *i)).collect();
     Ok(drive_with_contact(s, &[(id, q)], &given)?.0)
 }
 

@@ -58,6 +58,18 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         setting::hide_origin(app, ui);
         ui_kit::text(ui, app.tr("ui.hide_origin_note"), ui_kit::Text::Hint("hide_origin"));
     });
+    // Assemble ▸ Move's joint rings (#6679).
+    ui_kit::settings_section(ui, "assembly_move", app.tr("prefs.assembly_move"), |ui| {
+        ui_kit::settings_form(ui, t.space_24 * 7.0 + t.space_2, |ui| {
+            ui_kit::row(ui, app.tr("prefs.joint_turn_step"), |ui| {
+                ui_kit::settings_number(ui, &mut app.preferences.joint_turn_step, 0.001..=90.0, 0.1);
+            });
+            ui_kit::row(ui, app.tr("prefs.joint_turn_fine_step"), |ui| {
+                ui_kit::settings_number(ui, &mut app.preferences.joint_turn_fine_step, 0.001..=90.0, 0.01);
+            });
+        });
+        ui_kit::text(ui, app.tr("prefs.joint_turn_note"), ui_kit::Text::Hint("joint_turn"));
+    });
     // The Hole command's own settings, under its name.
     ui_kit::settings_section(ui, "create_hole", crate::i18n::tr_label("Create Hole"), |ui| {
         setting::hole_snaps(app, ui);

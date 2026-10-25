@@ -2,7 +2,8 @@
 //! squares, X/Y/Z rotation rings and a centre ball for a free drag in the view plane. It is a
 //! constant size on screen. A drag reports its change since the drag began (distances snap to
 //! round steps at the current zoom, angles to 5°; hold Alt or Ctrl for a free drag), so the caller
-//! adds it to the values it had when the drag started.
+//! adds it to the values it had when the drag started. Assemble ▸ Move puts only a part's joint
+//! freedoms on it (#6679): some of the arrows and rings, about the joint's own axes.
 
 use std::cell::RefCell;
 
@@ -52,18 +53,42 @@ pub struct Triad {
     pub center: Vec3,
     pub translate: bool,
     pub rotate: bool,
+    /// A part's joint freedoms (#6679): only these arrows and rings, no squares or ball.
+    pub joint: Option<Freedoms>,
+}
+
+/// The handles of a part's joint freedoms (Assemble ▸ Move, #6679).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Freedoms {
+    /// The joint's X, Y and Z in the world (unit, right-handed): the arrows' and rings' axes.
+    pub frame: [Vec3; 3],
+    /// Arrows along, and rings about, which of them.
+    pub arrows: [bool; 3],
+    pub rings: [bool; 3],
+    /// Ring steps (degrees): with the pointer near the ring, and beyond its guide circle.
+    pub turn_steps: (f64, f64),
 }
 
 #[derive(Clone, Copy, Debug)]
 struct State {
     handle: Handle,
     center: Vec3,
+    /// The triad's axes as the drag began.
+    dirs: [Vec3; 3],
     /// Grab point on the plane (planes, ball) or parameter along the axis.
     grab: Vec3,
     t0: f64,
     /// Ring: last angle seen and the angle turned so far.
     last: f64,
     turned: f64,
+    /// A joint ring (#6679): its coarse and fine steps (radians), the guide's radius (mm), whether
+    /// the pointer is beyond the guide, and the angle given and the angle turned when it last
+    /// crossed it (the new step counts on from there, so the part never jumps).
+    steps: Option<(f64, f64)>,
+    guide: f64,
+    fine: bool,
+    base: (f64, f64),
+    angle: f64,
 }
 
 const DIRS: [Vec3; 3] = [Vec3::X, Vec3::Y, Vec3::Z];
@@ -71,15 +96,15 @@ const DIRS: [Vec3; 3] = [Vec3::X, Vec3::Y, Vec3::Z];
 pub const LEN_PX: f64 = 110.0;
 
 thread_local! {
-    /// The last triad drawn: centre and arrow length in mm (for scenarios and tests).
-    static LAST: RefCell<Option<(Vec3, f64)>> = const { RefCell::new(None) };
+    /// The last triad drawn: centre, arrow length in mm and axes (for scenarios and tests).
+    static LAST: RefCell<Option<(Vec3, f64, [Vec3; 3])>> = const { RefCell::new(None) };
 }
 
 /// A world point on a handle of the last triad drawn: "x"/"y"/"z" on an arrow, "xy"/"yz"/"xz"
 /// in a square, "rx"/"ry"/"rz" on a ring, "ball". `by` moves it, `turn` (degrees) turns a ring
 /// point about its axis.
 pub fn handle_point(name: &str, by: Vec3, turn: f64) -> Option<Vec3> {
-    let (c, l) = LAST.with(|x| *x.borrow())?;
+    let (c, l, d) = LAST.with(|x| *x.borrow())?;
     let axis = |s: &str| match s {
         "x" => Some(0),
         "y" => Some(1),
@@ -88,30 +113,42 @@ pub fn handle_point(name: &str, by: Vec3, turn: f64) -> Option<Vec3> {
     };
     let p = match name {
         "ball" => c,
-        "xy" => c + (Vec3::X + Vec3::Y) * (0.35 * l),
-        "yz" => c + (Vec3::Y + Vec3::Z) * (0.35 * l),
-        "xz" => c + (Vec3::X + Vec3::Z) * (0.35 * l),
+        "xy" => c + (d[0] + d[1]) * (0.35 * l),
+        "yz" => c + (d[1] + d[2]) * (0.35 * l),
+        "xz" => c + (d[0] + d[2]) * (0.35 * l),
         r if r.starts_with('r') => {
             let i = axis(&r[1..])?;
-            let (e1, e2) = ring_basis(i);
+            let (e1, e2) = ring_basis(&d, i);
             let th = turn.to_radians();
             return Some(c + (e1 * th.cos() + e2 * th.sin()) * (RING * l) + by);
         }
-        a => c + DIRS[axis(a)?] * (0.75 * l),
+        a => c + d[axis(a)?] * (0.75 * l),
     };
     Some(p + by)
 }
 
+/// The radius of the last triad's ring guide (mm): beyond it a joint ring takes its fine step.
+pub fn guide_radius() -> Option<f64> {
+    LAST.with(|x| *x.borrow()).map(|(_, l, _)| GUIDE * l)
+}
+
 /// Ring radius as a share of the arrow length.
 const RING: f64 = 0.62;
+/// A joint ring's guide circle, as a share of the arrow length (#6679).
+const GUIDE: f64 = 1.0;
 
 /// In-plane directions of the ring about an axis (right-handed: e1 × e2 = axis).
-fn ring_basis(i: usize) -> (Vec3, Vec3) {
+fn ring_basis(d: &[Vec3; 3], i: usize) -> (Vec3, Vec3) {
     match i {
-        0 => (Vec3::Y, Vec3::Z),
-        1 => (Vec3::Z, Vec3::X),
-        _ => (Vec3::X, Vec3::Y),
+        0 => (d[1], d[2]),
+        1 => (d[2], d[0]),
+        _ => (d[0], d[1]),
     }
+}
+
+/// The triad's axes: the world's, or its joint's.
+fn dirs(t: &Triad) -> [Vec3; 3] {
+    t.joint.map_or(DIRS, |f| f.frame)
 }
 
 /// Distance from `p` to the screen segment a–b.
@@ -168,20 +205,29 @@ struct Shapes {
     planes: Vec<(usize, Ring<Pos2>)>,
     rings: Vec<(usize, Vec<Pos2>)>,
     ball: Pos2,
+    /// A joint's freedoms (#6679): no ball, and wider grips on its few handles.
+    joint: bool,
+}
+
+/// A circle of radius `r` about axis `i` of `d` through `c`, on screen.
+fn circle(proj: &Proj, c: Vec3, d: &[Vec3; 3], i: usize, r: f64) -> Vec<Pos2> {
+    let (e1, e2) = ring_basis(d, i);
+    (0..=64).map(|k| k as f64 / 64.0 * std::f64::consts::TAU).filter_map(|th| proj.to_screen(c + (e1 * th.cos() + e2 * th.sin()) * r)).collect()
 }
 
 fn shapes(proj: &Proj, t: &Triad, l: f64) -> Option<Shapes> {
     let c = t.center;
+    let d = dirs(t);
     let ball = proj.to_screen(c)?;
-    let mut s = Shapes { arrows: Vec::new(), planes: Vec::new(), rings: Vec::new(), ball };
+    let mut s = Shapes { arrows: Vec::new(), planes: Vec::new(), rings: Vec::new(), ball, joint: t.joint.is_some() };
     if t.translate {
-        for (i, d) in DIRS.iter().enumerate() {
+        for (i, d) in d.iter().enumerate().filter(|(i, _)| t.joint.is_none_or(|f| f.arrows[*i])) {
             if let (Some(a), Some(b)) = (proj.to_screen(c + *d * (0.18 * l)), proj.to_screen(c + *d * l)) {
                 s.arrows.push((i, a, b));
             }
         }
-        for i in 0..3 {
-            let (e1, e2) = ring_basis(i);
+        for i in (0..3).filter(|_| t.joint.is_none()) {
+            let (e1, e2) = ring_basis(&d, i);
             let q: Ring<Pos2> = [(0.25, 0.25), (0.45, 0.25), (0.45, 0.45), (0.25, 0.45)]
                 .iter()
                 .filter_map(|(a, b)| proj.to_screen(c + e1 * (a * l) + e2 * (b * l)))
@@ -192,12 +238,8 @@ fn shapes(proj: &Proj, t: &Triad, l: f64) -> Option<Shapes> {
         }
     }
     if t.rotate {
-        for i in 0..3 {
-            let (e1, e2) = ring_basis(i);
-            let pts: Vec<Pos2> = (0..=64)
-                .map(|k| k as f64 / 64.0 * std::f64::consts::TAU)
-                .filter_map(|th| proj.to_screen(c + (e1 * th.cos() + e2 * th.sin()) * (RING * l)))
-                .collect();
+        for i in (0..3).filter(|i| t.joint.is_none_or(|f| f.rings[*i])) {
+            let pts = circle(proj, c, &d, i, RING * l);
             if pts.len() > 2 {
                 s.rings.push((i, pts));
             }
@@ -207,16 +249,17 @@ fn shapes(proj: &Proj, t: &Triad, l: f64) -> Option<Shapes> {
 }
 
 fn hit(s: &Shapes, p: Pos2) -> Option<Handle> {
-    if s.ball.distance(p) < 9.0 {
+    if !s.joint && s.ball.distance(p) < 9.0 {
         return Some(Handle::Ball);
     }
-    if let Some((i, ..)) = s.arrows.iter().find(|(_, a, b)| seg_dist(p, *a, *b) < 6.0) {
+    let grip = if s.joint { 4.0 } else { 0.0 };
+    if let Some((i, ..)) = s.arrows.iter().find(|(_, a, b)| seg_dist(p, *a, *b) < 6.0 + grip) {
         return Some(Handle::Axis(*i));
     }
     if let Some((i, _)) = s.planes.iter().find(|(_, q)| in_quad(p, q)) {
         return Some(Handle::Plane(*i));
     }
-    s.rings.iter().find(|(_, pts)| pts.windows(2).any(|w| seg_dist(p, w[0], w[1]) < 5.0)).map(|(i, _)| Handle::Ring(*i))
+    s.rings.iter().find(|(_, pts)| pts.windows(2).any(|w| seg_dist(p, w[0], w[1]) < 5.0 + grip)).map(|(i, _)| Handle::Ring(*i))
 }
 
 /// Millimetres per screen pixel at a point.
@@ -246,7 +289,8 @@ pub(crate) fn contains_pointer(proj: &Proj, t: &Triad, p: Pos2) -> bool {
 pub fn show(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, id: egui::Id, t: &Triad, step: f64) -> Option<Drag> {
     let tk = Tokens::get();
     let l = mm_per_px(proj, t.center)? * LEN_PX;
-    LAST.with(|x| *x.borrow_mut() = Some((t.center, l)));
+    let d = dirs(t);
+    LAST.with(|x| *x.borrow_mut() = Some((t.center, l, d)));
     let sh = shapes(proj, t, l)?;
     // Handles by name for scenarios ("move_x", "move_rz", "move_ball"…).
     for n in ["x", "y", "z", "xy", "yz", "xz", "rx", "ry", "rz", "ball"] {
@@ -270,8 +314,17 @@ pub fn show(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, id: egui::I
     for (i, a, b) in &sh.arrows {
         arrow(painter, *a, *b, col(Handle::Axis(*i), *i), hot(Handle::Axis(*i)));
     }
-    let bc = if hot(Handle::Ball) { tk.accent } else { Color32::from_gray(235) };
-    painter.circle(sh.ball, 6.0, bc, Stroke::new(1.5, Color32::from_gray(60)));
+    if !sh.joint {
+        let bc = if hot(Handle::Ball) { tk.accent } else { Color32::from_gray(235) };
+        painter.circle(sh.ball, 6.0, bc, Stroke::new(1.5, Color32::from_gray(60)));
+    }
+    // A joint ring being turned shows its guide: beyond it, the fine step.
+    if let Some(s) = state.filter(|s| s.steps.is_some())
+        && let Handle::Ring(i) = s.handle
+    {
+        let c = tk.gizmo[i.min(2)].gamma_multiply(if s.fine { 0.9 } else { 0.45 });
+        painter.add(Shape::dashed_line(&circle(proj, s.center, &s.dirs, i, s.guide), Stroke::new(1.0, c), 6.0, 4.0));
+    }
     let p = pointer?;
     active?;
     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
@@ -282,10 +335,6 @@ pub fn show(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, id: egui::I
         crate::tool_modifiers::set_manipulator_dragging(true);
     }
     let view = proj.ray(sh.ball).1;
-    let plane_normal = |h: Handle| match h {
-        Handle::Plane(i) | Handle::Ring(i) => DIRS[i],
-        _ => view,
-    };
     let mut started = false;
     let mut st = match state {
         Some(s) => s,
@@ -296,15 +345,31 @@ pub fn show(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, id: egui::I
             let h = hovered?;
             let from = ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
             let c = t.center;
-            let mut s = State { handle: h, center: c, grab: c, t0: 0.0, last: 0.0, turned: 0.0 };
+            let steps = t.joint.map(|f| (f.turn_steps.0.max(1e-3).to_radians(), f.turn_steps.1.max(1e-3).to_radians()));
+            let mut s = State {
+                handle: h,
+                center: c,
+                dirs: d,
+                grab: c,
+                t0: 0.0,
+                last: 0.0,
+                turned: 0.0,
+                steps,
+                guide: GUIDE * l,
+                fine: false,
+                base: (0.0, 0.0),
+                angle: 0.0,
+            };
             match h {
-                Handle::Axis(i) => s.t0 = along(proj, from, c, DIRS[i])?,
+                Handle::Axis(i) => s.t0 = along(proj, from, c, d[i])?,
                 Handle::Ring(i) => {
-                    let q = on_plane(proj, from, c, DIRS[i])? - c;
-                    let (e1, e2) = ring_basis(i);
+                    let q = on_plane(proj, from, c, d[i])? - c;
+                    let (e1, e2) = ring_basis(&d, i);
                     s.last = q.dot(e2).atan2(q.dot(e1));
+                    s.fine = q.len() > s.guide;
                 }
-                _ => s.grab = on_plane(proj, from, c, plane_normal(h))?,
+                Handle::Plane(i) => s.grab = on_plane(proj, from, c, d[i])?,
+                Handle::Ball => s.grab = on_plane(proj, from, c, view)?,
             }
             started = true;
             s
@@ -312,12 +377,12 @@ pub fn show(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, id: egui::I
     };
     let change = match st.handle {
         Handle::Axis(i) => {
-            let v = along(proj, p, st.center, DIRS[i]).map(|v| v - st.t0).unwrap_or(0.0);
-            Change::Translate(DIRS[i] * snap(v, step, free))
+            let v = along(proj, p, st.center, st.dirs[i]).map(|v| v - st.t0).unwrap_or(0.0);
+            Change::Translate(st.dirs[i] * snap(v, step, free))
         }
         Handle::Ring(i) => {
-            if let Some(q) = on_plane(proj, p, st.center, DIRS[i]).map(|q| q - st.center) {
-                let (e1, e2) = ring_basis(i);
+            if let Some(q) = on_plane(proj, p, st.center, st.dirs[i]).map(|q| q - st.center) {
+                let (e1, e2) = ring_basis(&st.dirs, i);
                 let th = q.dot(e2).atan2(q.dot(e1));
                 let mut d = th - st.last;
                 while d > std::f64::consts::PI {
@@ -328,11 +393,22 @@ pub fn show(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, id: egui::I
                 }
                 st.turned += d;
                 st.last = th;
+                // A joint ring: the pointer crossing the guide changes the step, counted on from
+                // the angle given then, so the part does not jump (#6679).
+                if st.steps.is_some() && (q.len() > st.guide) != st.fine {
+                    st.fine = !st.fine;
+                    st.base = (st.angle, st.turned);
+                }
             }
-            Change::Rotate { axis: i, angle: snap(st.turned, 5f64.to_radians(), free) }
+            st.angle = match st.steps {
+                Some((coarse, fine)) => st.base.0 + snap(st.turned - st.base.1, if st.fine { fine } else { coarse }, free),
+                None => snap(st.turned, 5f64.to_radians(), free),
+            };
+            Change::Rotate { axis: i, angle: st.angle }
         }
         h => {
-            let d = on_plane(proj, p, st.center, plane_normal(h)).map(|q| q - st.grab).unwrap_or(Vec3::ZERO);
+            let n = if let Handle::Plane(i) = h { st.dirs[i] } else { view };
+            let d = on_plane(proj, p, st.center, n).map(|q| q - st.grab).unwrap_or(Vec3::ZERO);
             Change::Translate(Vec3::new(snap(d.x, step, free), snap(d.y, step, free), snap(d.z, step, free)))
         }
     };
@@ -421,7 +497,7 @@ mod tests {
     #[test]
     fn plane_squares_stay_within_the_triad() {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
-        let t = Triad { center: Vec3::ZERO, translate: true, rotate: false };
+        let t = Triad { center: Vec3::ZERO, translate: true, rotate: false, joint: None };
         // The squares reach 0.45 √2 of the arrow length from the centre, plus stroke and feathering.
         let limit = (0.45 * 2f64.sqrt() * LEN_PX) as f32 + 3.0;
         let mut worst = 0.0f32;

@@ -55,6 +55,25 @@ const MAX_REACH_STEPS: usize = 200;
 const STEP_ANGLE: f64 = 10.0;
 const STEP_SHARE: f64 = 0.1;
 
+/// Why no joint places `occ` (`Ok`: one does).
+fn placed(tree: &Tree, occ: u64) -> Result<(), String> {
+    if tree.fixed.contains_key(&occ) {
+        return Err("it is fixed in place (grounded, or the part its joints are placed from)".into());
+    }
+    if !tree.parent.contains_key(&occ) {
+        return Err("no joint places it: it is not connected to anything grounded (ground a part, or join it to a grounded part)".into());
+    }
+    Ok(())
+}
+
+/// The joints that place `occ`, from it out to the fixed part it is placed from: (joint, whether
+/// the part on `occ`'s side of it is its B side). An error says why no joint places it.
+pub fn placing_path(doc: &Document, st: &ModelState, occ: u64) -> Result<Vec<(u64, bool)>, String> {
+    let built = build(doc, st, &joint_values(&doc.assembly), &mut Solution::default());
+    placed(&built.tree, occ)?;
+    Ok(built.tree.path(occ).1)
+}
+
 /// Move the values of the joints on `r.occurrence`'s chain (those in `r.joints`, when given) so
 /// its point gets to `r.to`, or as close as the limits and closed loops let it: the nearest pose,
 /// found from where it is (it stays on the mechanism's branch). Values a motion link sets move
@@ -65,12 +84,7 @@ pub fn reach(doc: &Document, st: &ModelState, r: &Reach) -> Result<Reached, Stri
     let vals = joint_values(asm);
     let built = build(doc, st, &vals, &mut Solution::default());
     let tree = &built.tree;
-    if tree.fixed.contains_key(&r.occurrence) {
-        return Err("it is fixed in place (grounded, or the part its joints are placed from)".into());
-    }
-    if !tree.parent.contains_key(&r.occurrence) {
-        return Err("no joint places it: it is not connected to anything grounded (ground a part, or join it to a grounded part)".into());
-    }
+    placed(tree, r.occurrence)?;
     let linked: BTreeSet<(u64, usize)> = asm.links.iter().map(|l| (l.b, l.ib)).collect();
     let allowed = |id: &u64| r.joints.as_ref().is_none_or(|js| js.contains(id));
     let path: BTreeSet<u64> = tree.path(r.occurrence).1.iter().map(|(k, _)| *k).collect();

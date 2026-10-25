@@ -278,7 +278,9 @@ pub(crate) fn owns_pointer(app: &SolveApp, proj: &Proj, p: Pos2) -> bool {
     app.dialog.as_ref().and_then(|d| crate::dialogs_move::triad(app, d)).is_some_and(|t| crate::gizmo::contains_pointer(proj, &t, p))
         || (app.dialog.is_none()
             && app.tool.is_none()
-            && crate::browser::occurrence_triad_model(app).is_some_and(|t| crate::gizmo::contains_pointer(proj, &t, p)))
+            && crate::browser::occurrence_triad_model(app)
+                .or_else(|| crate::joint_drag::triad(app))
+                .is_some_and(|t| crate::gizmo::contains_pointer(proj, &t, p)))
 }
 
 /// Draw the manipulator and the value box (called by the viewport after the model is drawn).
@@ -289,6 +291,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj
     }
     if app.dialog.is_none() && app.tool.is_none() {
         crate::browser::occurrence_triad(app, ui, painter, proj);
+        crate::joint_drag::show(app, ui, painter, proj);
+    } else {
+        // Measure or any other tool or dialog closes Assemble ▸ Move's handles (#6679).
+        crate::joint_drag::close(app);
     }
     let Some(mut d) = app.dialog.take() else { return };
     if matches!(d.kind, Kind::Assembly(_)) {

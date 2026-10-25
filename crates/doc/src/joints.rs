@@ -263,6 +263,19 @@ impl JointKind {
     pub fn is_angle(self, i: usize) -> bool {
         matches!(self.dofs().get(i), Some(&("angle" | "yaw" | "pitch" | "roll" | "turn" | "spin")))
     }
+    /// The axis of A's joint frame (0 x, 1 y, 2 z) each value moves B along, or turns it about
+    /// through B's origin, for the joints whose every value has one: `None` for a ball and the
+    /// relations, whose turns compose.
+    pub fn value_axes(self) -> Option<&'static [usize]> {
+        match self {
+            JointKind::Rigid => Some(&[]),
+            JointKind::Revolute | JointKind::Slider => Some(&[2]),
+            JointKind::Cylindrical => Some(&[2, 2]),
+            JointKind::PinSlot => Some(&[2, 0]),
+            JointKind::Planar => Some(&[0, 1, 2]),
+            _ => None,
+        }
+    }
     /// A relation that only ties some directions or points (parallel, on a plane…): made where
     /// the parts are, its values start as the nearest that meet it, so B moves no more than it
     /// must.
@@ -2071,7 +2084,7 @@ mod face;
 pub use face::{end_faces, face_name_at, named_face_spot, pin_end, round_end_at};
 #[path = "joints_relations.rs"]
 mod relations;
-pub use reach::{REACH_TOL, Reach, Reached, reach};
+pub use reach::{REACH_TOL, Reach, Reached, placing_path, reach};
 pub use relations::relation_values;
 
 /// The rest angle that turns B least as joint `j` is made, as B sits now: none or a half turn
@@ -2384,6 +2397,32 @@ mod tests {
         assert!(JointKind::parse("Pin Slot").is_some() && JointKind::parse("nope").is_none());
         let f = frame(Vec3::new(1.0, 2.0, 3.0), Vec3::Z, None).unwrap();
         assert!(close(&mat_mul(&f, &mat_inverse(&f).unwrap()), &IDENTITY));
+    }
+
+    /// #6679: Assemble ▸ Move drags each value along, or about, the axis `value_axes` names, the
+    /// turns through B's origin.
+    #[test]
+    fn value_axes_are_where_the_values_move_b() {
+        let e = [Vec3::X, Vec3::Y, Vec3::Z];
+        for kind in [JointKind::Revolute, JointKind::Slider, JointKind::Cylindrical, JointKind::PinSlot, JointKind::Planar] {
+            let axes = kind.value_axes().unwrap();
+            assert_eq!(axes.len(), kind.dofs().len(), "{kind:?}");
+            let q: Vec<f64> = (0..axes.len()).map(|i| 0.3 + 0.7 * i as f64).collect();
+            let m0 = motion(kind, &q);
+            for (i, k) in axes.iter().enumerate() {
+                let mut q1 = q.clone();
+                q1[i] += 1e-6;
+                let m1 = motion(kind, &q1);
+                let moved = (apply_point(&m1, Vec3::ZERO) - apply_point(&m0, Vec3::ZERO)) * 1e6;
+                let (x0, x1) = (apply_vector(&m0, Vec3::X), apply_vector(&m1, Vec3::X));
+                if kind.is_angle(i) {
+                    assert!(moved.len() < 1e-9 && ((x1 - x0) * 1e6 - e[*k].cross(x0)).len() < 1e-5, "{kind:?} {i}");
+                } else {
+                    assert!((moved - e[*k]).len() < 1e-6 && x1.dist(x0) < 1e-12, "{kind:?} {i}");
+                }
+            }
+        }
+        assert!(JointKind::Ball.value_axes().is_none() && JointKind::Rigid.value_axes() == Some(&[][..]));
     }
 
     #[test]

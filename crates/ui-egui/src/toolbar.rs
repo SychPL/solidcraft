@@ -2101,6 +2101,9 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 if crate::sketch_text_move::cancel_drag(app) || crate::occurrence_drag::cancel(app) {
                     continue;
                 }
+                if app.tool.is_none() && app.dialog.is_none() && crate::joint_drag::cancel(app, ctx) {
+                    continue;
+                }
                 if crate::select_other::is_open(app) {
                     crate::select_other::close(app);
                 } else if app.tool.is_some() {

@@ -249,7 +249,7 @@ pub fn triad(app: &SolveApp, d: &Dialog) -> Option<gizmo::Triad> {
         return None;
     }
     let t = Vec3::new(len(app, x).unwrap_or(0.0), len(app, y).unwrap_or(0.0), len(app, z).unwrap_or(0.0));
-    Some(gizmo::Triad { center: pivot(app, d)? + t, translate: true, rotate: *mode == FREE })
+    Some(gizmo::Triad { center: pivot(app, d)? + t, translate: true, rotate: *mode == FREE, joint: None })
 }
 
 /// Apply a triad drag to the dialog's values (added to the values when the drag began).

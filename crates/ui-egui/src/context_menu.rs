@@ -1258,7 +1258,8 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             }
         }
         "ui.moveOccurrence" => {
-            if let Some(o) = id_of(&p, "occurrence") {
+            // A part that joints place drags only the freedoms its joint allows (#6679).
+            if let Some(o) = id_of(&p, "occurrence").filter(|o| !crate::joint_drag::open(app, *o)) {
                 let mut movement = crate::browser::OccMove::new(o);
                 movement.had_pending = app.session.pending_moves.contains_key(&o);
                 movement.path = p.get("path").and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();

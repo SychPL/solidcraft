@@ -1036,6 +1036,11 @@ impl SolveApp {
             return;
         }
         workspace::select_command_tab(self, id);
+        // Move on a picked face of a part that joints place drags only the freedoms its joint
+        // allows (#6679).
+        if id == "solid.move" && joint_drag::open_for_selection(self) {
+            return;
+        }
         // Move a selected assembly placement the same way as its Browser menu, retaining
         // the exact instance path and the grounding/rigid-group restrictions.
         if id == "solid.move"

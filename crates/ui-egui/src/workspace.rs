@@ -122,8 +122,8 @@ pub const SECTIONS: &[Section] = &[
     Section {
         tab: "ASSEMBLE",
         panel: "POSITION",
-        promoted: 3,
-        ids: &["occurrence.ground", "component.capture_position", "component.revert_position"],
+        promoted: 4,
+        ids: &["solid.move", "occurrence.ground", "component.capture_position", "component.revert_position"],
     },
     Section {
         tab: "ASSEMBLE",

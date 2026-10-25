@@ -384,3 +384,108 @@ fn quarter_turn_reaches_keep_the_four_bar_closed_and_diagnostics_current() {
         }
     }
 }
+
+/// #6679: a grounded Base with one part on each case Assemble ▸ Move meets: Hinge (revolute about
+/// +Z), Rail (slider along +X), Bore (cylindrical about +Z), Weld (rigid), Locked (a revolute
+/// held by equal limits), Set (a revolute whose angle is a parameter), Back (a slider with the
+/// part on its A side), and Loose, joined to nothing.
+fn movers() -> Session {
+    let mut s = Session::default();
+    for (name, x) in [
+        ("Base", -1.0),
+        ("Arm", 10.0),
+        ("Rod", 20.0),
+        ("Shaft", 30.0),
+        ("Plate", 40.0),
+        ("Stuck", 50.0),
+        ("Dial", 60.0),
+        ("Rider", 70.0),
+        ("Loose", 80.0),
+    ] {
+        part(&mut s, name, [x, -1.0, -1.0]);
+    }
+    let base = occ(&s, "Base");
+    run(&mut s, "occurrence.ground", json!({"occurrence": base, "grounded": true}));
+    pin(&mut s, "revolute", "Hinge", "Base", "Arm", Vec3::new(10.0, 0.0, 0.0), Vec3::Z);
+    pin(&mut s, "slider", "Rail", "Base", "Rod", Vec3::new(20.0, 0.0, 0.0), Vec3::X);
+    pin(&mut s, "cylindrical", "Bore", "Base", "Shaft", Vec3::new(30.0, 0.0, 0.0), Vec3::Z);
+    pin(&mut s, "rigid", "Weld", "Base", "Plate", Vec3::new(40.0, 0.0, 0.0), Vec3::Z);
+    pin(&mut s, "revolute", "Locked", "Base", "Stuck", Vec3::new(50.0, 0.0, 0.0), Vec3::Z);
+    run(&mut s, "joint.limits", json!({"joint": "Locked", "min": 0, "max": 0}));
+    run(&mut s, "parameters.add", json!({"name": "turn", "expression": "0 deg"}));
+    let at = |o: &str| json!({"occurrence": o, "point": [60, 0, 0], "z": [0, 0, 1]});
+    run(&mut s, "joint.create", json!({"type": "revolute", "a": at("Base"), "b": at("Dial"), "flip": true, "values": ["turn"], "name": "Set"}));
+    pin(&mut s, "slider", "Back", "Rider", "Base", Vec3::new(70.0, 0.0, 0.0), Vec3::X);
+    s
+}
+
+fn freedoms(s: &mut Session, part: &str) -> Value {
+    let o = occ(s, part);
+    run(s, "joint.freedoms", json!({"occurrence": o}))
+}
+
+/// Move offers a part only the freedoms its joint allows, each along or about its axis, and
+/// says why a part has none.
+#[test]
+fn joint_freedoms_are_only_what_the_joint_allows() {
+    let mut s = movers();
+    let steps = s.undo.len();
+    // (part, [(turn, axis)], sign)
+    for (part, want, sign) in [
+        ("Arm", vec![(true, "z")], 1),
+        ("Rod", vec![(false, "z")], 1),
+        ("Shaft", vec![(true, "z"), (false, "z")], 1),
+        ("Rider", vec![(false, "z")], -1),
+    ] {
+        let r = freedoms(&mut s, part);
+        assert_eq!((&r["placed"], &r["reason"]), (&json!(true), &Value::Null), "{part}: {r}");
+        let got: Vec<(bool, &str)> =
+            r["freedoms"].as_array().into_iter().flatten().map(|f| (f["turn"] == true, f["axis"].as_str().unwrap_or(""))).collect();
+        assert_eq!(got, want, "{part}: {r}");
+        assert!(r["freedoms"].as_array().into_iter().flatten().all(|f| f["sign"] == sign), "{part}: {r}");
+    }
+    // The slider's axis is the world X it was made along; the frame sits on its B origin.
+    let r = freedoms(&mut s, "Rod");
+    assert!((r["frame"]["z"][0].as_f64().unwrap_or(0.0).abs() - 1.0).abs() < 1e-9, "{r}");
+    assert!((r["frame"]["origin"][0].as_f64().unwrap_or(0.0) - 20.0).abs() < 1e-9, "{r}");
+    for (part, why) in [("Plate", "rigid"), ("Stuck", "locked by its limits"), ("Dial", "set by an expression")] {
+        let r = freedoms(&mut s, part);
+        assert!(r["freedoms"] == json!([]) && r["reason"].as_str().is_some_and(|w| w.contains(why)), "{part}: {r}");
+    }
+    let r = freedoms(&mut s, "Base");
+    assert_eq!((&r["placed"], &r["grounded"]), (&json!(false), &json!(true)), "{r}");
+    let r = freedoms(&mut s, "Loose");
+    assert_eq!((&r["placed"], &r["grounded"]), (&json!(false), &json!(false)), "{r}");
+    assert_eq!(s.undo.len(), steps, "reading the freedoms changes nothing");
+}
+
+/// `joint.drive {index, value}` drives that one value: the others keep theirs and the
+/// expressions they follow; limits still clamp it.
+#[test]
+fn driving_one_value_by_index_keeps_the_others() {
+    let mut s = movers();
+    let at = |o: &str| json!({"occurrence": o, "point": [90, 0, 0], "z": [0, 0, 1]});
+    part(&mut s, "Spool", [90.0, -1.0, -1.0]);
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(
+        &mut s,
+        "joint.create",
+        json!({"type": "cylindrical", "a": at("Base"), "b": at("Spool"), "flip": true, "values": ["turn", 0], "name": "Spin"}),
+    );
+    let r = freedoms(&mut s, "Spool");
+    assert_eq!(r["freedoms"].as_array().map(|f| f.iter().map(|f| f["index"].clone()).collect::<Vec<_>>()), Some(vec![json!(1)]), "{r}");
+    let before = place(&s, "Spool", Vec3::new(91.0, 1.0, 0.0));
+    let r = run(&mut s, "joint.drive", json!({"joint": "Spin", "index": 1, "value": 6, "continuous": true}));
+    assert_eq!(r["continuous"], json!(true), "{r}");
+    assert!(place(&s, "Spool", Vec3::new(91.0, 1.0, 0.0)).dist(before + Vec3::Z * 6.0) < 1e-6, "{r}");
+    let spin = s.doc.assembly.joints.iter().find(|j| j.name == "Spin").cloned().unwrap_or_else(|| panic!("no Spin"));
+    assert_eq!(spin.exprs.value(0), Some("turn"), "the angle still follows its parameter");
+    run(&mut s, "joint.limits", json!({"joint": "Spin", "index": 1, "min": -2, "max": 2}));
+    let r = run(&mut s, "joint.drive", json!({"joint": "Spin", "index": 1, "value": "9 mm"}));
+    assert!((r["values"][1]["value"].as_f64().unwrap_or(f64::NAN) - 2.0).abs() < 1e-9, "{r}");
+    for bad in
+        [json!({"joint": "Spin", "index": 2, "value": 1}), json!({"joint": "Spin", "index": -1, "value": 1}), json!({"joint": "Spin", "index": 0})]
+    {
+        assert!(s.execute("joint.drive", &bad).is_err(), "{bad}");
+    }
+}

@@ -105,6 +105,7 @@ fn swap_in(app: &mut SolveApp, mut slot: DocSlot) -> DocSlot {
     }
     // Whatever was going on in the design leaves with it.
     crate::sketch_text_move::cancel_drag(app);
+    crate::joint_drag::close(app);
     crate::dialogs::cancel(app);
     crate::dim_view::cancel();
     app.tool = None;

@@ -40,13 +40,22 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.rigid_group", "Rigid Group", rigid_group).at("SOLID", "ASSEMBLE").icon("rigid_group").params("occurrences: [ids or names] (move together, as they are)"),
     CommandSpec::new("joint.drive", "Drive Joints", drive).at("SOLID", "ASSEMBLE").icon("drive").params(
         "joint: id|name; value | values: [angles in deg or expressions, distances] (values not given keep theirs; a value driven drops the expression joint.create gave it; clamped to the limits; the other joints of a \
-         closed loop follow, and the motion stops where the loop can no longer close → stopped_by_loop); quiet?: bool (leave out dof \
-         and fixed) → values: [{name, value, unit: deg|mm, limits}] as joint.list gives them; moved: whether any occurrence moved; \
+         closed loop follow, and the motion stops where the loop can no longer close → stopped_by_loop); index?: the value `value` sets \
+         (default 0; the others keep theirs and their expressions); quiet?: bool (leave out dof and fixed); continuous?: bool (a frame of a \
+         drag: the answer says continuous, and the app's command line doesn't echo it) → values: [{name, value, unit: deg|mm, limits}] as joint.list gives them; moved: whether any occurrence moved; \
          reason: why the joint can move nothing (suppressed, its origins lost, or its chain joined to nothing grounded → unconnected: \
          the occurrence named)",
     ),
     CommandSpec::new("joint.reach", "Reach Point", reach).icon("reach").params(
         "occurrence: id|name; point: [x,y,z] (where its point goes, world); at?: [x,y,z] (its point, in the world where it is now; default: the centre of          its bodies' box); z?: [x,y,z] (the way its axis then points); axis?: [x,y,z] (that axis, in the world now; default: its own z); joints?: [ids          or names] (only these move toward the point; the other joints of a closed loop they are in follow); quiet?: bool; continuous?: bool (a frame          of a drag: the answer says continuous, and the app's command line doesn't echo it). Moves the values of the joints          on its chain from where they are to the nearest pose, within their limits, through motion links, keeping closed loops closed as joint.drive does          (contact sets are not checked) → reached; error_mm (and error_deg with z): how close it got; point: where its point is; values: [{joint, name,          values}] of the joints that moved, as joint.list gives them; moved; stopped_by_limit: [{joint, value, limit: min|max}]: the limits it rests on          short of the point; stopped_by_loop: {joint}: the closed loop that stopped it (its chain alone gets closer); reason: why nothing can move",
+    ),
+    CommandSpec::new("joint.freedoms", "Joint Freedoms", freedoms).icon("joint").noundo().params(
+        "occurrence: id|name → what Assemble ▸ Move drags (#6679): placed (a joint places it), grounded; joint, name, type: the first joint \
+         out from it that lets it move (rigid joints carry it with the next); frame: {origin: that joint's B origin, x, y, z: its A frame's \
+         axes}, in the world; freedoms: [{index, name, value, unit: deg|mm, limits, turn: bool, axis: x|y|z (the frame's axis it moves \
+         along or turns about, through the origin), sign: 1|-1 (-1: the part is the joint's A side, so it moves the other way as the value \
+         grows)}]: the values free to drag (not set by a motion link or an expression, not locked by equal limits); reason: why none, when \
+         none is (reads only)",
     ),
     CommandSpec::new("joint.motion_link", "Motion Link", motion_link)
         .at("SOLID", "ASSEMBLE")
@@ -805,30 +814,46 @@ fn drive(s: &mut Session, p: &Value) -> Result<Value> {
     if kind == JointKind::Rigid {
         return Err(bad(cmd, "a rigid joint does not move"));
     }
-    let mut q = values_param(s, p, kind, cmd)?;
     if p.get("values").is_none() && p.get("value").is_none() {
         return Err(bad(cmd, "give `value` or `values`"));
     }
+    // The values driven: the first ones, as many as `values` gives, or `value`'s one (its `index`).
+    let (mut q, given): (Vec<f64>, Vec<usize>) = match p.get("index") {
+        Some(i) => {
+            let n = kind.dofs().len();
+            let i = i.as_u64().and_then(|i| usize::try_from(i).ok()).filter(|i| *i < n);
+            let i = i.ok_or_else(|| bad(cmd, format!("`index` must be one of the joint's {n} values")))?;
+            let v = p.get("value").ok_or_else(|| bad(cmd, "`index` goes with `value`"))?;
+            let mut q = vec![0.0; n];
+            if let Some(slot) = q.get_mut(i) {
+                *slot = value(s, v, kind.is_angle(i), cmd)?;
+            }
+            (q, vec![i])
+        }
+        None => {
+            let given = match p.get("values") {
+                Some(Value::Array(a)) => (0..a.len()).collect(),
+                _ => vec![0],
+            };
+            (values_param(s, p, kind, cmd)?, given)
+        }
+    };
     let doc = s.doc_mut();
     let Some(j) = doc.assembly.joints.iter_mut().find(|j| j.id == id) else { return Err(bad(cmd, "joint")) };
-    // Values not given (after `value`'s first, or past the end of `values`) keep theirs.
-    let given = match p.get("values") {
-        Some(Value::Array(a)) => a.len(),
-        _ => 1,
-    };
-    for (i, v) in q.iter_mut().enumerate().skip(given) {
+    // Values not given keep theirs.
+    for (i, v) in q.iter_mut().enumerate().filter(|(i, _)| !given.contains(i)) {
         *v = j.values.get(i).copied().unwrap_or(*v);
     }
     joints::clamp(j, &mut q);
-    // Moved as far toward `q` as contact sets and closed loops allow. Values left out of
-    // `values` are not driven: in a closed loop they follow.
+    // Moved as far toward `q` as contact sets and closed loops allow. Values not given are not
+    // driven: in a closed loop they follow.
     // Driving moves the joint by hand: the values driven drop their expressions (an expression
     // given here is worked out once, as contact or a loop may stop the motion short of it).
-    for i in 0..given.min(kind.dofs().len()) {
-        j.exprs.set_value(i, None);
+    for i in &given {
+        j.exprs.set_value(*i, None);
     }
     let before = super::motion::positions(s);
-    let r = super::motion::drive_joint(s, id, q, given)?;
+    let r = super::motion::drive_joint(s, id, q, &given)?;
     let sol = solution(s, &BTreeMap::new(), response_analysis(p));
     let mut out = sol_json(&sol, p);
     out["joint"] = json!(id);
@@ -841,6 +866,9 @@ fn drive(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(o) = unconnected {
             out["unconnected"] = json!(o);
         }
+    }
+    if bool_(p, "continuous") == Some(true) {
+        out["continuous"] = json!(true);
     }
     Ok(out)
 }
@@ -939,6 +967,81 @@ fn reach(s: &mut Session, p: &Value) -> Result<Value> {
     if bool_(p, "continuous") == Some(true) {
         out["continuous"] = json!(true);
     }
+    Ok(out)
+}
+
+/// Joint Freedoms (#6679): the values of the first joint out from an occurrence that moves it,
+/// with the axes Assemble ▸ Move drags them along and about.
+fn freedoms(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "joint.freedoms";
+    let occ = occurrence_id(s, p.get("occurrence"), cmd)?;
+    let grounded = occ == 0 || s.doc.occurrences.iter().any(|o| o.id == occ && o.grounded);
+    let mut out = json!({"occurrence": occ, "placed": false, "grounded": grounded, "joint": null, "freedoms": [], "reason": null});
+    let st = s.model.state();
+    let path = match joints::placing_path(&s.doc, &st, occ) {
+        Ok(path) => path,
+        Err(why) => {
+            out["reason"] = json!(why);
+            return Ok(out);
+        }
+    };
+    out["placed"] = json!(true);
+    // Rigid joints carry it with the next joint out.
+    let found =
+        path.iter().find_map(|(id, b_side)| s.doc.assembly.joints.iter().find(|j| j.id == *id && j.kind != JointKind::Rigid).map(|j| (j, *b_side)));
+    let Some((j, b_side)) = found else {
+        out["reason"] = json!("rigid joints hold it to a fixed part");
+        return Ok(out);
+    };
+    let kind = json!(j.kind);
+    out["joint"] = json!(j.id);
+    out["name"] = json!(j.name);
+    out["type"] = kind.clone();
+    let Some(axes) = j.kind.value_axes() else {
+        out["reason"] = json!(format!(
+            "{} is a {} joint: Move drags revolute, slider, cylindrical, pin-slot and planar joints (drag the part itself instead)",
+            j.name,
+            kind.as_str().unwrap_or("such")
+        ));
+        return Ok(out);
+    };
+    let (a, b) = match (s.doc.origin_world(&st, &j.a), s.doc.origin_world(&st, &j.b)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => {
+            out["reason"] = json!(e.to_string());
+            return Ok(out);
+        }
+    };
+    let dir = |r: [f64; 4]| {
+        let v = Vec3::new(r[0], r[1], r[2]);
+        let v = v.normalized().unwrap_or(v);
+        json!([v.x, v.y, v.z])
+    };
+    out["frame"] = json!({"origin": [b[3][0], b[3][1], b[3][2]], "x": dir(a[0]), "y": dir(a[1]), "z": dir(a[2])});
+    let linked: BTreeSet<(u64, usize)> = s.doc.assembly.links.iter().map(|l| (l.b, l.ib)).collect();
+    let (mut free, mut held) = (Vec::new(), Vec::new());
+    for (i, (axis, mut f)) in axes.iter().zip(effective_values(s, j.id).unwrap_or_default()).enumerate() {
+        let what = j.kind.dofs().get(i).copied().unwrap_or("value");
+        if linked.contains(&(j.id, i)) {
+            held.push(format!("its {what} follows a motion link"));
+        } else if j.exprs.value(i).is_some() {
+            held.push(format!("its {what} is set by an expression"));
+        } else if let Some(Some((lo, hi))) = j.limits.get(i)
+            && (hi - lo).abs() <= 1e-12
+        {
+            held.push(format!("its {what} is locked by its limits"));
+        } else {
+            f["index"] = json!(i);
+            f["turn"] = json!(j.kind.is_angle(i));
+            f["axis"] = json!(["x", "y", "z"].get(*axis));
+            f["sign"] = json!(if b_side { 1 } else { -1 });
+            free.push(f);
+        }
+    }
+    if free.is_empty() {
+        out["reason"] = json!(format!("{}: {}", j.name, held.join(", ")));
+    }
+    out["freedoms"] = json!(free);
     Ok(out)
 }
 

@@ -1,0 +1,22 @@
+{
+  "en": {
+    "assembly_move.contact": "stopped by contact",
+    "assembly_move.held": "Move: {part} has no freedom to drag ({reason}). Its joints are kept.",
+    "assembly_move.limit": "at its limit",
+    "assembly_move.loop": "held by a closed loop",
+    "prefs.assembly_move": "Assembly Move",
+    "prefs.joint_turn_fine_step": "Fine turn step (°)",
+    "prefs.joint_turn_note": "Move turns a joint in the turn step with the pointer near its ring, and in the fine step beyond the dashed guide around it",
+    "prefs.joint_turn_step": "Turn step (°)"
+  },
+  "pl": {
+    "assembly_move.contact": "zatrzymane przez kontakt",
+    "assembly_move.held": "Przesuń: {part} nie ma swobody do przeciągania ({reason}). Jego złącza pozostają.",
+    "assembly_move.limit": "na granicy",
+    "assembly_move.loop": "trzymane przez zamkniętą pętlę",
+    "prefs.assembly_move": "Przesuwanie w złożeniu",
+    "prefs.joint_turn_fine_step": "Dokładny krok obrotu (°)",
+    "prefs.joint_turn_note": "Przesuń obraca złącze o krok obrotu, gdy wskaźnik jest blisko pierścienia, i o krok dokładny za przerywanym okręgiem wokół niego",
+    "prefs.joint_turn_step": "Krok obrotu (°)"
+  }
+}
