@@ -546,8 +546,8 @@ preference_settings! {
     angle_decimals: u8 = 1, PAGE_DESIGN;
     /// Assemble ▸ Move turns a joint in steps of this many degrees with the pointer near its
     /// ring, and of `joint_turn_fine_step` beyond the ring's guide (#6679).
-    joint_turn_step: f32 = 10.0, PAGE_DESIGN, accept(0.001..=90.0);
-    joint_turn_fine_step: f32 = 0.1, PAGE_DESIGN, accept(0.001..=90.0);
+    joint_turn_step: f32 = 10.0, PAGE_DESIGN;
+    joint_turn_fine_step: f32 = 0.1, PAGE_DESIGN;
     /// Up/Down and the wheel over a focused value field step its plain number (`value_step`,
     /// #2320). Off by default: the keys move the text cursor and the wheel scrolls, as before.
     step_values: bool = false, PAGE_DESIGN => check_id("ui.step_values");

@@ -201,6 +201,11 @@ pub fn open(app: &mut SolveApp, occurrence: u64) -> bool {
     if r["placed"] != true && !(jointed && r["grounded"] == true) {
         return false;
     }
+    // Move takes over from the tool or dialog open, as starting any command does.
+    if app.dialog.is_some() {
+        crate::dialogs::cancel(app);
+    }
+    app.tool = None;
     match handles(app, occurrence, &r) {
         Some(h) => {
             app.tree.occurrence_move = None;
