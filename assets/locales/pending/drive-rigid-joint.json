@@ -1,0 +1,11 @@
+{
+  "en": {
+    "drive.rigid": "{joint} is a rigid joint: it holds its parts still, so it has nothing to drive. To let them move, change its type in Edit Joint: Revolute to rotate, Slider to slide, Cylindrical for both."
+  },
+  "ja": {
+    "drive.rigid": "{joint} は剛体ジョイントです。部品をその場に固定するため、駆動するものがありません。動かすには「ジョイントを編集」で種類を変更してください: 回転させるなら Revolute、スライドさせるなら Slider、両方なら Cylindrical。"
+  },
+  "zh": {
+    "drive.rigid": "{joint} 是刚性接头：它把零件固定在原位，因此没有可驱动的运动。要让零件运动，请在“编辑接头”中更改其类型：旋转用 Revolute，滑动用 Slider，两者兼有用 Cylindrical。"
+  }
+}
