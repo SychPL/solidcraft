@@ -754,6 +754,13 @@ preference_settings! {
     agents: Vec<crate::agent_chat::agents::AgentConfig> = Vec::new();
     /// The agent a new conversation starts with (an agent's id; empty: the first one available).
     agent_default: String = String::new();
+    /// The agent the chat last started (an agent's id; empty: none yet).
+    agent_last: String = String::new();
+    /// When SolidCraft starts: connect the agent started last (`agent_last`, else the one a new
+    /// conversation starts with), and open the panel (#7009). Off by default: an agent starts
+    /// only when a message is sent or Connect is pressed, and the panel opens when asked for.
+    agent_connect_at_start: bool = false, PAGE_AI;
+    agent_chat_open_at_start: bool = false, PAGE_AI;
     /// How much the agent may do without asking (`ask`, `edits`, `all`), and per agent.
     ai_permissions: crate::agent_chat::agents::Mode = crate::agent_chat::agents::Mode::Edits, PAGE_AI;
     agent_permissions: std::collections::BTreeMap<String, crate::agent_chat::agents::Mode> = Default::default(), PAGE_AI;
