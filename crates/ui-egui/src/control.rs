@@ -1952,11 +1952,11 @@ mod tests {
         };
         let designs = json!([proj.to_string_lossy()]);
         assert_eq!(call(at(&proj, "a.step"), designs.clone())["ok"], true);
-        for p in [at(&proj, ".env"), at(&proj, ".git/a.step"), at(&out, "a.step")] {
+        for p in [at(&proj, ".secret.step"), at(&proj, ".git/a.step"), at(&out, "a.step")] {
             let v = call(p.clone(), designs.clone());
             assert!(v["ok"] == false && v.to_string().contains("outside the folders this agent may use"), "{p}: {v}");
         }
-        assert!(!proj.join(".env").exists() && !proj.join(".git/a.step").exists());
+        assert!(!proj.join(".secret.step").exists() && !proj.join(".git/a.step").exists());
         assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "nothing written beside it");
         let too_many = json!(vec![proj.to_string_lossy(); vfs::MAX_DESIGN_FOLDERS + 1]);
         for bad in [json!(proj.to_string_lossy()), json!([1]), too_many] {
