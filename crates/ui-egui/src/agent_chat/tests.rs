@@ -2032,6 +2032,10 @@ fn the_agent_started_last_connects_at_start_once_the_agents_are_known() {
     assert_eq!(app.agent_chat.agent_id.as_deref(), Some("api-2"), "the agent started last, not the default");
     assert_eq!(app.agent_chat.state(), State::Starting);
     assert!(app.agent_chat.backend.is_some());
+    // A design opened over the launch's blank one keeps the agent: nothing was asked yet.
+    crate::documents::adopt(&mut app, solidcraft_engine::Session::default());
+    assert!(app.agent_chat.backend.is_some() && app.agent_chat.items.is_empty());
+    assert_eq!(app.docs.count(), 2);
     // Once per launch.
     disconnect(&mut app);
     poll(&mut app, &ctx);

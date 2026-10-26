@@ -1726,6 +1726,8 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
     // AI features turned off: nothing keeps running, nothing is looked for.
     if !shown(app) {
+        // Turned back on later, AI features don't connect as if SolidCraft were starting.
+        app.agent_chat.connect_at_start = false;
         crate::documents::disconnect_background_chats(app, false);
         if app.agent_chat.backend.is_some() || app.agent_chat.open {
             disconnect(app);
