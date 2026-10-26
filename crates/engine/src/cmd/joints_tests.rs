@@ -192,6 +192,9 @@ fn rigid_cycles_solve_and_conflicts_report() {
     let c = r["conflicts"].as_array().cloned().unwrap_or_default();
     assert_eq!(c.len(), 1, "{r}");
     assert!(c[0]["why"].as_str().unwrap_or("").contains("off by"), "{r}");
+    // A rigid joint has nothing to drive: the refusal names the types that move (#6981).
+    let e = s.execute("joint.drive", &json!({"joint": "Wrong", "value": 1})).map(|_| ()).unwrap_err().to_string();
+    assert!(e.contains("does not move") && e.contains("joint.edit") && e.contains("revolute") && e.contains("cylindrical"), "{e}");
     // Suppressing it clears the conflict.
     let r = run(&mut s, "joint.edit", json!({"joint": "Wrong", "suppressed": true}));
     assert_eq!(r["conflicts"].as_array().map(Vec::len), Some(0));
