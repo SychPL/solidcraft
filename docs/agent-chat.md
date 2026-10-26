@@ -24,7 +24,9 @@ Everything about it is on one page: **Preferences → AI**.
   the agent you connected last (the default one if you never connected), in the background,
   once SolidCraft has looked for the installed agents. The panel's header shows **Starting…**,
   then **Ready**, or **Connection failed** with **Retry** in place of **Connect** (the agent is
-  missing, could not start, or ended while starting); the conversation says why.
+  missing, could not start, or ended while starting); the conversation says why. A design
+  opened in place of the empty one SolidCraft starts with keeps the agent connected, as long
+  as nothing was asked in that empty design's chat.
 - **Open the Assistant panel when SolidCraft starts** (off by default): the panel (or its own
   window) is shown at each launch.
 
