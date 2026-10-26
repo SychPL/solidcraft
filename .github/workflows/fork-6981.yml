@@ -1,0 +1,201 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#7051 (#6981) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-6981
+on:
+  push:
+    branches: [fork-ci-6981]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+      - name: Drive Joints and i18n tests (ui-egui), joint tests (engine)
+        if: always()
+        run: |
+          cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- drive i18n::tests dialogs_assembly
+          cargo test --profile ci --locked -p solidcraft-engine --lib -- cmd::joints
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # The GPU path tracer's own tests (no engine code) run out of memory or time on 4 vCPUs.
+      - name: Tests (the pull request's default filter)
+        run: >-
+          cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4
+          -E 'default() - (package(solidcraft-gpu) & test(/^path::/))'
+  screenshots:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: before
+            ref: 4d611005345b7fbda5ee16e649dee3d6bc15365a
+          - label: after
+            ref: ""
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+      LABEL: ${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth x11-apps imagemagick libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: Drive Joints on a rigid joint
+        run: |
+          mkdir -p shots
+          cat > "$RUNNER_TEMP/shots.py" <<'PY'
+          import json, os, secrets, socket, subprocess, sys, time
+          label = os.environ["LABEL"]
+          port = 18847
+          token = secrets.token_hex(32)
+          env = dict(os.environ, SOLIDCRAFT_CONTROL_TOKEN=token, SOLIDCRAFT_CONTROL_DIR=os.path.join(os.environ["RUNNER_TEMP"], "control"))
+          log = open(os.path.join(os.environ["RUNNER_TEMP"], "app.log"), "wb")
+          app = subprocess.Popen(["xvfb-run", "-n", "99", "-s", "-screen 0 1600x1000x24 -nolisten tcp", "target/ci/solidcraft", "--control", str(port)],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          deadline = time.monotonic() + 120
+          while True:
+              try:
+                  sock = socket.create_connection(("127.0.0.1", port), timeout=120)
+                  break
+              except OSError:
+                  if app.poll() is not None or time.monotonic() > deadline:
+                      sys.exit("the app never listened")
+                  time.sleep(0.3)
+          io = sock.makefile("rw", encoding="utf-8")
+          n = 0
+          def call(method, params=None, ok=True):
+              global n
+              n += 1
+              req = {"id": n, "method": method, "params": params or {}}
+              if n == 1:
+                  req["token"] = token
+              io.write(json.dumps(req) + "\n")
+              io.flush()
+              reply = json.loads(io.readline())
+              if ok and reply.get("ok") is not True:
+                  sys.exit(f"{method} {params} failed: {reply}")
+              return reply
+          def ex(command, params):
+              return call("engine.execute", {"command": command, "params": params})
+          def shot(name):
+              time.sleep(1.5)
+              path = os.path.abspath(f"shots/{name}-{label}.png")
+              r = call("ui.screenshot", {"path": path}, ok=False)
+              if r.get("ok") is not True or not os.path.exists(path):
+                  print(f"ui.screenshot failed ({r}), taking the X screen instead", flush=True)
+                  subprocess.run(["import", "-display", ":99", "-window", "root", path], check=True)
+              print(f"shot {path}", flush=True)
+          def preview_error():
+              i = call("ui.inspect")["result"]
+              return json.dumps({"dialog": i.get("dialog"), "preview": i.get("preview")}, ensure_ascii=False)[:1500]
+
+          call("ui.resize", {"width": 1400, "height": 860})
+          call("ui.home", {"open": False}, ok=False)
+          time.sleep(1.0)
+          # A block and a plate on it, joined by a rigid joint (the report's first joint).
+          ex("component.create", {"name": "Block"})
+          ex("solid.box", {"length": 30, "width": 30, "height": 40, "corner": [0, 0, 0]})
+          ex("component.activate", {"component": "root"})
+          ex("component.create", {"name": "Plate"})
+          ex("solid.box", {"length": 50, "width": 30, "height": 8, "corner": [-10, 0, 40]})
+          ex("component.activate", {"component": "root"})
+          ex("occurrence.ground", {"occurrence": "Block:1", "grounded": True})
+          ex("joint.create", {"type": "rigid", "a": {"occurrence": "Block", "face": [15, 15, 40]}, "b": {"occurrence": "Plate", "face": [15, 15, 40]}})
+          call("ui.view", {"view": "iso"})
+          call("ui.view", {"view": "fit"})
+          tabs = call("ui.handles", {"prefix": "tab:"})["result"]
+          for h in (tabs if isinstance(tabs, list) else tabs.get("handles", [])):
+              if h.get("name") == "tab:ASSEMBLE":
+                  call("ui.click", {"x": h["x"], "y": h["y"]})
+          call("ui.start", {"command": "joint.drive"})
+          shot("drive-rigid")
+          print("Drive Joints on the rigid joint:", preview_error(), flush=True)
+          r = call("engine.execute", {"command": "joint.drive", "params": {"joint": "Joint1", "value": 30}}, ok=False)
+          print("engine.execute joint.drive on the rigid joint:", json.dumps(r, ensure_ascii=False), flush=True)
+          if label == "after":
+              h = call("ui.handles", {"prefix": "drive:"})["result"]
+              found = [x for x in (h if isinstance(h, list) else h.get("handles", [])) if x.get("name") == "drive:edit_joint"]
+              if not found:
+                  sys.exit(f"no Edit Joint button: {h}")
+              call("ui.move", {"x": found[0]["x"], "y": found[0]["y"]})
+              call("ui.click", {"x": found[0]["x"], "y": found[0]["y"]})
+              shot("edit-joint")
+              print("After Edit Joint:", preview_error(), flush=True)
+          call("app.quit", {"force": True}, ok=False)
+          app.wait(timeout=60)
+          PY
+          set -o pipefail
+          python3 -I "$RUNNER_TEMP/shots.py" | tee "shots/transcript-$LABEL.txt"
+      - if: always()
+        run: tail -c 12000 "$RUNNER_TEMP/app.log" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots-${{ matrix.label }}
+          path: shots/
