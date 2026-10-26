@@ -1,0 +1,37 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#7047 (#5968) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-5968-demo
+on:
+  push:
+    branches: [fork-ci-5968-demo]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  demo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1 python3-pil
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: Find Limits on the Hinge Assembly sample, through the control channel
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/demo"
+          python3 .github/fork-5968/demo.py target/ci/solidcraft "$RUNNER_TEMP/demo" 2>&1 | tee "$RUNNER_TEMP/demo/transcript.txt"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: find-limits-demo
+          path: ${{ runner.temp }}/demo
