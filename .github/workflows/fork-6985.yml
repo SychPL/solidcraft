@@ -2,6 +2,8 @@
 # runners, since the fork has no Blacksmith runners.
 name: fork-6985
 on:
+  push:
+    branches: [fork-ci-design-changed]
   workflow_dispatch:
 permissions:
   contents: read
