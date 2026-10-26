@@ -32,6 +32,7 @@ impl Effect {
 /// (`ui.screenshot` with a `path`, and `ui.render`, write a file: see [`effect`].)
 const READ_METHODS: &[&str] = &[
     "control.pending",
+    "control.subscribe",
     "document.inspect",
     "document.revision",
     "engine.commands",

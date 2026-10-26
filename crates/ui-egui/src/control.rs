@@ -41,7 +41,10 @@
 //!   and replies once the command has run (`"animate": false` skips that one call)
 //! - `ui.resize {width, height}`, `app.quit`
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use solidcraft_engine::io::vfs;
@@ -85,6 +88,81 @@ pub(crate) fn chat_turn_cancelled(turn: Option<&std::sync::atomic::AtomicBool>) 
 
 pub(crate) fn cancelled_chat_response() -> Value {
     json!({"ok": false, "error": "not run: the agent chat turn ended or its document tab was left"})
+}
+
+/// The active design's id and revision for control connections that sent `control.subscribe`
+/// (#6985): the window publishes them each frame while one is subscribed, and each such
+/// connection waits for them to move, then sends a `design.changed` line.
+#[derive(Default)]
+pub struct DesignWatch {
+    subscribers: AtomicUsize,
+    now: Mutex<Option<(String, u64)>>,
+    moved: Condvar,
+}
+
+/// The app's [`DesignWatch`].
+pub static DESIGN_WATCH: DesignWatch = DesignWatch::new();
+
+impl DesignWatch {
+    pub const fn new() -> Self {
+        DesignWatch { subscribers: AtomicUsize::new(0), now: Mutex::new(None), moved: Condvar::new() }
+    }
+
+    fn now(&self) -> MutexGuard<'_, Option<(String, u64)>> {
+        self.now.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The design as it is now; waiters wake only when it moved. Only the latest is kept, so
+    /// changes made faster than a connection sends them go out as one.
+    pub fn publish(&self, document_id: &str, revision: u64) {
+        let mut now = self.now();
+        if now.as_ref().is_some_and(|(id, r)| id == document_id && *r == revision) {
+            return;
+        }
+        *now = Some((document_id.to_string(), revision));
+        self.moved.notify_all();
+    }
+
+    /// Whether a connection is subscribed: the window publishes only then.
+    pub fn subscribed(&self) -> bool {
+        self.subscribers.load(Ordering::Relaxed) > 0
+    }
+
+    /// Count a subscribed connection until the returned guard is dropped.
+    pub fn join(&'static self) -> Subscriber {
+        self.subscribers.fetch_add(1, Ordering::Relaxed);
+        Subscriber(self)
+    }
+
+    /// Wait up to `wait` for the design to differ from `seen`, or for `stop`; the design then
+    /// (`None` before anything was published).
+    pub fn wait(&self, seen: &(String, u64), stop: &AtomicBool, wait: Duration) -> Option<(String, u64)> {
+        let unmoved = |now: &mut Option<(String, u64)>| now.as_ref() == Some(seen) && !stop.load(Ordering::Relaxed);
+        let (now, _) = self.moved.wait_timeout_while(self.now(), wait, unmoved).unwrap_or_else(PoisonError::into_inner);
+        now.clone()
+    }
+}
+
+/// A subscribed connection, counted by its [`DesignWatch`] while this lives.
+pub struct Subscriber(&'static DesignWatch);
+
+impl Drop for Subscriber {
+    fn drop(&mut self) {
+        self.0.subscribers.fetch_sub(1, Ordering::Relaxed);
+        // Under the lock, so a connection about to wait sees its `stop` set before it does.
+        let _now = self.0.now();
+        self.0.moved.notify_all();
+    }
+}
+
+/// Publish the active design for subscribed connections ([`DesignWatch`]). Called at the end of
+/// each frame's logic (which runs while the window is hidden too) and of its drawing, so a
+/// change made in either goes out in that frame.
+pub(crate) fn publish_design(app: &mut SolveApp, watch: &DesignWatch) {
+    if watch.subscribed() {
+        let revision = app.session.design_revision();
+        watch.publish(&app.session.document_id, revision);
+    }
 }
 
 pub enum Outcome {
@@ -392,6 +470,13 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         "engine.commands" => wrap(app.session.execute("engine.commands", &json!({})).map_err(|e| e.to_string())),
         "document.inspect" => wrap(app.session.execute("document.inspect", p).map_err(|e| e.to_string())),
         "document.revision" => wrap(app.session.execute("document.revision", p).map_err(|e| e.to_string())),
+        // The connection already counts as subscribed (`DesignWatch::join`), and its events start
+        // from this answer: published first, so no event repeats it and none older follows.
+        "control.subscribe" => {
+            let revision = app.session.design_revision();
+            DESIGN_WATCH.publish(&app.session.document_id, revision);
+            ok(json!({"document_id": app.session.document_id, "revision": revision}))
+        }
         "ui.messages" => ok(crate::messages::control(app, p)),
         "ui.inspect" => ok(json!({
             "render": crate::render_workspace::inspect_state(app),
@@ -1212,6 +1297,44 @@ mod tests {
         let (fresh, revision) = now(&mut h);
         assert!(fresh != id && fresh != other, "{fresh}");
         assert!(revision > other_revision, "{revision} after {other_revision}");
+    }
+
+    /// #6985: while a connection is subscribed, a frame publishes the active design as
+    /// `document.revision` names it: the same after a selection, a new revision after an edit,
+    /// another id on another tab; nothing while none is. `control.subscribe` answers what
+    /// `document.revision` does, and a connection that waited through several changes is told
+    /// only of the latest.
+    #[test]
+    fn subscribed_frames_publish_the_design() {
+        static WATCH: DesignWatch = DesignWatch::new();
+        let now = || WATCH.now().clone();
+        let mut h = crate::scenario::Harness::new();
+        publish_design(&mut h.app, &WATCH);
+        assert_eq!(now(), None, "nobody subscribed");
+        let counted = WATCH.join();
+        let subscribed = h.call("control.subscribe", json!({}));
+        assert_eq!(subscribed["result"], h.call("document.revision", json!({}))["result"], "{subscribed}");
+        publish_design(&mut h.app, &WATCH);
+        let (id, first) = now().unwrap();
+        assert_eq!(json!({"document_id": id, "revision": first}), subscribed["result"]);
+        h.call("engine.execute", json!({"command": "select.clear", "params": {}}));
+        publish_design(&mut h.app, &WATCH);
+        assert_eq!(now(), Some((id.clone(), first)), "a selection is no change");
+        h.call("engine.execute", json!({"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}}));
+        publish_design(&mut h.app, &WATCH);
+        let (same, second) = now().unwrap();
+        assert!(same == id && second > first, "{same} {second} after {first}");
+        h.call("engine.execute", json!({"command": "edit.undo", "params": {}}));
+        publish_design(&mut h.app, &WATCH);
+        let third = now().unwrap().1;
+        assert!(third > second, "{third} after {second}");
+        let stop = AtomicBool::new(false);
+        assert_eq!(WATCH.wait(&(id.clone(), first), &stop, Duration::ZERO), Some((id.clone(), third)));
+        h.call("ui.documents", json!({"action": "new"}));
+        publish_design(&mut h.app, &WATCH);
+        assert!(now().is_some_and(|(other, _)| other != id), "{:?}", now());
+        drop(counted);
+        assert!(!WATCH.subscribed());
     }
 
     fn render(app: &mut SolveApp, path: &std::path::Path) -> Vec<u8> {

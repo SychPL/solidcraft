@@ -278,20 +278,29 @@ pub(crate) fn new_document_id() -> String {
     format!("{run:016x}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
-/// `document.revision`: the design's id and the revision of what it holds now, a new one when it
-/// changed since last asked. Changes between two asks that end where they began (an edit undone)
-/// need no new one: the design is the one that revision named.
-fn revision(s: &mut Session, _p: &Value) -> Result<Value> {
-    let seen = |f: &Followed| std::ptr::eq(f.doc.as_ptr(), Arc::as_ptr(&s.doc)) && f.visibility == s.visibility && f.pending_moves == s.pending_moves;
-    let revision = match s.followed.as_ref().filter(|f| seen(f)) {
-        Some(f) => f.revision,
-        None => {
-            let revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
-            let (doc, visibility, pending_moves) = (Arc::downgrade(&s.doc), s.visibility.clone(), s.pending_moves.clone());
-            s.followed = Some(Followed { doc, visibility, pending_moves, revision });
-            revision
+impl Session {
+    /// The revision of what the design holds now (`document.revision`), a new one when it changed
+    /// since last asked. Changes between two asks that end where they began (an edit undone) need
+    /// no new one: the design is the one that revision named.
+    pub fn design_revision(&mut self) -> u64 {
+        let seen = |f: &Followed| {
+            std::ptr::eq(f.doc.as_ptr(), Arc::as_ptr(&self.doc)) && f.visibility == self.visibility && f.pending_moves == self.pending_moves
+        };
+        match self.followed.as_ref().filter(|f| seen(f)) {
+            Some(f) => f.revision,
+            None => {
+                let revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+                let (doc, visibility, pending_moves) = (Arc::downgrade(&self.doc), self.visibility.clone(), self.pending_moves.clone());
+                self.followed = Some(Followed { doc, visibility, pending_moves, revision });
+                revision
+            }
         }
-    };
+    }
+}
+
+/// `document.revision`: the design's id and [`Session::design_revision`].
+fn revision(s: &mut Session, _p: &Value) -> Result<Value> {
+    let revision = s.design_revision();
     Ok(json!({"document_id": s.document_id, "revision": revision}))
 }
 
