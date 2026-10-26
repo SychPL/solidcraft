@@ -187,86 +187,6 @@ fn send(out: &mut impl Write, reply: &Value) -> std::io::Result<()> {
     out.write_all(&line)
 }
 
-/// A subscribed connection's socket, for its replies and its events: each line is written whole
-/// and alone, so an event never lands inside a reply (#6985).
-struct Lines {
-    socket: TcpStream,
-    turn: Mutex<()>,
-}
-
-impl Lines {
-    fn send(&self, line: &Value) -> std::io::Result<()> {
-        let _turn = self.turn.lock().unwrap_or_else(PoisonError::into_inner);
-        send(&mut &self.socket, line)
-    }
-}
-
-/// A connection's `control.subscribe` (#6985): its `design.changed` lines, sent from a thread of
-/// their own until the connection ends.
-struct Subscription {
-    lines: Arc<Lines>,
-    stop: Arc<AtomicBool>,
-    _counted: Subscriber,
-}
-
-impl Subscription {
-    /// Write `reply`, the window's answer to `control.subscribe` naming the design `seen`, on
-    /// `out`, then send `design`'s changes after it: the reply goes out before any event. `None`,
-    /// with nothing written, when no thread or socket was left for the events.
-    fn start(
-        design: &'static DesignWatch,
-        counted: Subscriber,
-        out: &TcpStream,
-        seen: (String, u64),
-        reply: &Value,
-    ) -> Option<(Self, std::io::Result<()>)> {
-        let lines = Arc::new(Lines { socket: out.try_clone().ok()?, turn: Mutex::new(()) });
-        let stop = Arc::new(AtomicBool::new(false));
-        let first = lines.turn.lock().unwrap_or_else(PoisonError::into_inner);
-        let (l, s) = (lines.clone(), stop.clone());
-        std::thread::Builder::new().stack_size(64 * 1024).spawn(move || send_events(design, &l, &s, seen)).ok()?;
-        let sent = send(&mut &lines.socket, reply);
-        drop(first);
-        Some((Subscription { lines, stop, _counted: counted }, sent))
-    }
-}
-
-/// The design a `control.subscribe` reply names.
-fn design_of(reply: &Value) -> Option<(String, u64)> {
-    let result = reply.get("result")?;
-    Some((result.get("document_id")?.as_str()?.to_string(), result.get("revision")?.as_u64()?))
-}
-
-impl Drop for Subscription {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        // The socket closes now, not when the thread next looks; a line blocked on a client that
-        // stopped reading ends too.
-        let _ = self.lines.socket.shutdown(std::net::Shutdown::Both);
-    }
-}
-
-/// The `design.changed` lines of a subscribed connection, each time the design differs from the
-/// last one it was told of (`seen`), until `stop`.
-fn send_events(design: &DesignWatch, lines: &Lines, stop: &AtomicBool, mut seen: (String, u64)) {
-    while !stop.load(Ordering::Relaxed) {
-        let Some(now) = design.wait(&seen, stop, Duration::from_secs(1)).filter(|now| *now != seen) else { continue };
-        if lines.send(&json!({"event": "design.changed", "params": {"document_id": now.0, "revision": now.1}})).is_err() {
-            break;
-        }
-        seen = now;
-        std::thread::sleep(EVENT_GAP);
-    }
-}
-
-/// Write `reply` on the connection: through its subscription once it has one.
-fn answer(out: &mut TcpStream, events: Option<&Subscription>, reply: &Value) -> std::io::Result<()> {
-    match events {
-        Some(e) => e.lines.send(reply),
-        None => send(out, reply),
-    }
-}
-
 /// The reply to a connection that didn't show the token; the connection is then closed.
 fn unauthorized() -> Value {
     json!({"ok": false, "error": "unauthorized: send the control token as \"token\" (see docs/control-protocol.md)"})
@@ -447,6 +367,86 @@ fn busy_message(p: &Pending, method: &str) -> String {
          send this one again",
         p.id, p.what
     )
+}
+
+/// A subscribed connection's socket, for its replies and its events: each line is written whole
+/// and alone, so an event never lands inside a reply (#6985).
+struct Lines {
+    socket: TcpStream,
+    turn: Mutex<()>,
+}
+
+impl Lines {
+    fn send(&self, line: &Value) -> std::io::Result<()> {
+        let _turn = self.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        send(&mut &self.socket, line)
+    }
+}
+
+/// A connection's `control.subscribe` (#6985): its `design.changed` lines, sent from a thread of
+/// their own until the connection ends.
+struct Subscription {
+    lines: Arc<Lines>,
+    stop: Arc<AtomicBool>,
+    _counted: Subscriber,
+}
+
+impl Subscription {
+    /// Write `reply`, the window's answer to `control.subscribe` naming the design `seen`, on
+    /// `out`, then send `design`'s changes after it: the reply goes out before any event. `None`,
+    /// with nothing written, when no thread or socket was left for the events.
+    fn start(
+        design: &'static DesignWatch,
+        counted: Subscriber,
+        out: &TcpStream,
+        seen: (String, u64),
+        reply: &Value,
+    ) -> Option<(Self, std::io::Result<()>)> {
+        let lines = Arc::new(Lines { socket: out.try_clone().ok()?, turn: Mutex::new(()) });
+        let stop = Arc::new(AtomicBool::new(false));
+        let first = lines.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        let (l, s) = (lines.clone(), stop.clone());
+        std::thread::Builder::new().stack_size(64 * 1024).spawn(move || send_events(design, &l, &s, seen)).ok()?;
+        let sent = send(&mut &lines.socket, reply);
+        drop(first);
+        Some((Subscription { lines, stop, _counted: counted }, sent))
+    }
+}
+
+/// The design a `control.subscribe` reply names.
+fn design_of(reply: &Value) -> Option<(String, u64)> {
+    let result = reply.get("result")?;
+    Some((result.get("document_id")?.as_str()?.to_string(), result.get("revision")?.as_u64()?))
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        // The socket closes now, not when the thread next looks; a line blocked on a client that
+        // stopped reading ends too.
+        let _ = self.lines.socket.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// The `design.changed` lines of a subscribed connection, each time the design differs from the
+/// last one it was told of (`seen`), until `stop`.
+fn send_events(design: &DesignWatch, lines: &Lines, stop: &AtomicBool, mut seen: (String, u64)) {
+    while !stop.load(Ordering::Relaxed) {
+        let Some(now) = design.wait(&seen, stop, Duration::from_secs(1)).filter(|now| *now != seen) else { continue };
+        if lines.send(&json!({"event": "design.changed", "params": {"document_id": now.0, "revision": now.1}})).is_err() {
+            break;
+        }
+        seen = now;
+        std::thread::sleep(EVENT_GAP);
+    }
+}
+
+/// Write `reply` on the connection: through its subscription once it has one.
+fn answer(out: &mut TcpStream, events: Option<&Subscription>, reply: &Value) -> std::io::Result<()> {
+    match events {
+        Some(e) => e.lines.send(reply),
+        None => send(out, reply),
+    }
 }
 
 fn serve(stream: TcpStream, token: &str, tx: Sender<ControlRequest>, ctx: egui::Context, patient: bool) {
