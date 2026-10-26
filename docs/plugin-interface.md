@@ -94,8 +94,8 @@ Preferences > Plugins        plugin.json (static)          Session (engine, L4)
   is waiting: in guest code (epoch interruption makes long guest code yield so the timeout can fire),
   in a WASI poll, or in one of our host functions. A plugin whose call timed out or trapped has its
   Store dropped and is restarted fresh on its next call (its in-memory state is lost; its `store`
-  data is not). Panel events queued for the old instance are dropped; a fresh instance whose panel is
-  open first gets `opened`, so it rebuilds the panel from its `store` and the design.
+  data is not). Panel events queued for the old instance are dropped; a fresh instance whose panel or
+  widget is visible first gets `opened`, so it rebuilds the panel from its `store` and the design.
   Instantiation itself (`instantiate_async`, which runs the start functions of the component's core
   modules) is the first call on a fresh Store and runs under the same timeout, with the deadline of
   the call that needed the instance; a start function that loops ends there with `limit`, and
@@ -111,6 +111,7 @@ Preferences > Plugins        plugin.json (static)          Session (engine, L4)
   `store`, `log`, `host.request-execute`, and `engine.run` for the short list of handler-safe
   commands (inspect, select, view; section 6.4). To change the design, a handler calls `host.request-execute(entry, params)`; the host
   runs that transaction after the handler returns and reports the outcome as an `executed` event.
+  A physical action instead waits for human confirmation (6.4a).
 - **A handler belongs to one design.** The host records which design was active when the handler
   call started, as (tab, design generation). The generation is a counter the host keeps per tab and
   bumps whenever the tab's design is replaced rather than edited: new, open, recover, revert, and
@@ -147,7 +148,7 @@ Preferences > Plugins        plugin.json (static)          Session (engine, L4)
   have no window: there `plugin.act` runs inline, and the calling thread serves the action's
   handler-safe requests itself, as `plugin.run` does, within the same 30 s. A batch or script that
   contains `plugin.run` is never computed ahead (`Session::ahead`, 6.3). The panel itself never uses
-  `plugin.act`.
+  `plugin.act`; it requests physical actions through `host.request-execute` (6.4a).
 
 Why this split: a transaction must be atomic and quick (the design is locked while it runs), and a
 network round trip inside it would freeze the window. A handler may wait seconds for a server, so it
@@ -217,18 +218,25 @@ interface store {
     previous-version: func() -> option<string>;
 }
 
-/// HTTPS to the origins plugin.json names. Handlers only; a transaction gets `denied`.
+/// HTTP to approved origins or user-set local services. Handlers only; transactions get `denied`.
 interface net {
     use types.{plugin-error};
 
     enum method { get, post, put, patch, delete }
+    enum mesh-format { three-mf }
+    enum mesh-quality { standard, fine, finest }
+    /// Empty bodies means the current selection's bodies; unknown names are invalid.
+    record mesh-body { bodies: list<string>, format: mesh-format, quality: mesh-quality }
 
     record request {
         method: method,
-        /// An absolute `https://` URL on an origin plugin.json lists.
+        /// An absolute `https://` URL on an origin plugin.json lists, or
+        /// `local:<name>/path?query` for a local service whose base URL the user sets.
         url: string,
         headers: list<tuple<string, string>>,
         body: list<u8>,
+        /// Host-made body for a local service with mesh permission; `body` must then be empty.
+        mesh: option<mesh-body>,
     }
 
     record response {
@@ -249,8 +257,13 @@ interface net {
 interface host {
     use types.{json, plugin-error};
 
-    /// Run `entry` as a transaction after this handler returns. The panel gets `executed`.
+    /// Run `entry` as a transaction after this handler returns. A physical action instead
+    /// asks for human confirmation, then runs as an action. The panel gets `executed`.
     request-execute: func(entry: string, params: json) -> result<_, plugin-error>;
+
+    /// Replace this plugin's pending refresh. At least 2 s; only while panel or widget is
+    /// visible. Panel calls only; the handler gets `refresh`, never a concurrent call.
+    schedule-refresh: func(seconds: u32) -> result<_, plugin-error>;
 }
 
 /// Entries: what scripts, the CLI and agents can call (`plugin.run`, `plugin.act`).
@@ -276,6 +289,10 @@ interface panel {
     record choice { id: string, label: string, options: list<string>, selected: u32 }
     record styled { text: string, tone: tone }
 
+    enum widget-state { idle, busy, attention, error }
+    /// At most two plain-text labels, optional finite progress in 0-1, host-chosen colour.
+    record status { lines: list<string>, progress: option<f64>, state: widget-state }
+
     /// One thing on a row.
     variant cell {
         text(styled),
@@ -293,6 +310,7 @@ interface panel {
         text-input(text-input),
         number-input(number-input),
         choice(choice),
+        status(status),
         separator,
     }
 
@@ -312,7 +330,7 @@ interface panel {
     record executed { entry: string, outcome: result<json, string> }
 
     variant event {
-        /// The panel was opened.
+        /// The panel or widget first became visible.
         opened,
         /// A button was clicked, or a checkbox or choice changed; `inputs` holds every input.
         action(action),
@@ -322,6 +340,8 @@ interface panel {
         design-changed,
         /// What a `host.request-execute` did.
         executed(executed),
+        /// A visible panel or widget's scheduled refresh is due (6.7a).
+        refresh,
     }
 
     handle: func(e: event) -> result<_, plugin-error>;
@@ -490,18 +510,21 @@ still refused):
 | `api` | `"0.1"`; the host refuses an unknown major (and, while `0.x`, an unknown minor) |
 | `component` | a file name (no separators) inside the folder, at most 16 MiB (6.2) |
 | `world` | `command-plugin`, `panel-plugin`, or `importer-plugin` (only on a host with the `file-formats` feature, 9a); checked against the component's exports at load |
-| `entries` | 0-64; `name` `[a-z0-9_-]{1,32}`, unique; `label` 1-80 chars; `kind` `transaction` (default) or `action`; optional `params`, a one-line parameter doc in the style of `CommandSpec::params` (at most 1 KiB, no control characters), shown in the command listings; optional `effect`, `edit` (default) or `read` (action entries only, 6.4); optional `input` and `output`, JSON Schemas of the params and the result (5a); optional `example`, one params value for `plugin test` (5a); a `plugin.run` or `host.request-execute` of an unlisted or `action` entry, or a `plugin.act` of a `transaction` entry, is `invalid` |
+| `entries` | 0-64; `name` `[a-z0-9_-]{1,32}`, unique; `label` 1-80 chars; `kind` `transaction` (default) or `action`; optional `params`, a one-line parameter doc in the style of `CommandSpec::params` (at most 1 KiB, no control characters), shown in the command listings; optional `effect`, `edit` (default), `read` or `physical` (`read` and `physical` on action entries only, 6.4); optional `input` and `output`, JSON Schemas of the params and the result (5a); optional `example`, one params value for `plugin test` (5a); a `plugin.run` of an unlisted or `action` entry, a `host.request-execute` of an unlisted or non-physical `action` entry, or a `plugin.act` of a `transaction` entry is `invalid` |
+| `entries[].machine_kind` | required with `effect: physical`, refused otherwise; plain text, 1-40 chars, no control characters (for example "printer") |
+| `entries[].confirm` | required with `effect: physical`, refused otherwise; `{machine, action}`, each plain text, 1-80 chars, no control characters; fixed machine name and action shown before every call (6.4a) |
 | `panel` | required for `panel-plugin`, refused otherwise; `label` 1-40 chars |
 | `commands` | 0-256 engine command ids, each byte-equal to a `CommandSpec::id` in this build (`find_command` also matches case-insensitively, so the host compares the found spec's `id` with the listed one); otherwise the plugin does not load and the page says which id is missing. `engine.run` compares the same way |
 | `permissions.store` | private storage (section 6.6) |
 | `permissions.clock` | real wall clock in WASI |
 | `permissions.net` | 0-8 origins, each exactly `https://host[:port]` (no path, no wildcard, no IP literals, no `localhost`); optional `secret` with `name` `[a-z0-9_-]{1,32}`, `label` 1-40 chars, `header` from a fixed set (`Authorization`, `X-Api-Key`, `Private-Token`), `prefix` at most 16 chars |
+| `permissions.local` | 0-2 services, each `{name, port, secret?, mesh?}`; unique `name` `[a-z0-9-]{1,32}`, default `port` 1-65535; optional `secret` has the same fields and rules as `net`; `mesh` defaults to false and permits host-made mesh bodies; the user sets the address (6.5a) |
 | `limits.memory_mib` | 16-256, default 64 |
 | `limits.stack_kib` | 512-16384, default 512 (wasmtime's default); the plugin's wasm stack (6.2) |
 | `limits.component_mib` | 1-16 in 0.1, default 16; the maximum rises only after S2's measurement (6.2) |
 | `formats` | `importer-plugin` only: 1-16 file extensions (`[a-z0-9]{1,16}`, without the dot), each with a `label`; an extension that another enabled importer already lists makes the later plugin refuse to load, with a message naming both |
 | `reads_input_folder` | `importer-plugin` only, default false: lets `input.read` open files next to the imported one (assemblies, 9a); shown on the approval screen |
-| `surfaces` | 0-8 places the plugin shows up, each `{kind, label?, entry?}`; rules in 9b |
+| `surfaces` | 0-8 places the plugin shows up, each `{kind, label?, entry?}`; includes `toolbar-widget` for `panel-plugin` only (one per plugin); rules in 9b |
 | `limits.transaction_seconds` | 1-120, default 10 |
 
 No `icon` in 0.1: plugin artwork would bypass the asset rules. Panels use a generic plugin icon from
@@ -530,8 +553,9 @@ the right outcome for a plugin it cannot run.
 - **A conformance kit against the real host.** `solidcraft-cli plugin test <dir>` runs every entry
   headless on the real host (never a fake) with its `example` params, or values generated from
   `input`, and checks that it does not trap, that it stays within the rights of its kind and
-  effect, and that a transaction is one undo step. Until 1.0, `plugin check` and `plugin test` on the
-  current WIT are the kit; from 1.0 on, SolidCraft's own CI also loads the pilots built against the
+  effect, and that a transaction is one undo step. For `physical`, it checks that the headless call
+  is refused without running plugin code; it never starts a machine. Until 1.0, `plugin check` and
+  `plugin test` on the current WIT are the kit; from 1.0 on, SolidCraft's own CI also loads the pilots built against the
   previous WIT minor.
 - **Development mode.** `solidcraft --plugin-dev <dir>` loads one plugin folder without approval for
   that run only, marks it as a development plugin on the Plugins page and wherever its entries show,
@@ -551,11 +575,17 @@ the right outcome for a plugin it cannot run.
   "keeps up to 4 MiB on this computer", "can read the clock", "may keep the window busy for up to
   N seconds per change" (`limits.transaction_seconds`), "may use up to N MiB of memory"
   (`limits.memory_mib`); for an importer, "opens files with these extensions: ..." and, with
-  `reads_input_folder`, "may read other files in the same folder as a file you import". The approval stores a hash of
-  (`commands`, `permissions`, `limits`, `world`, each entry's `name`, `kind` and `effect`, and each surface's `kind` and `entry`) in preferences
+  `reads_input_folder`, "may read other files in the same folder as a file you import". For each
+  `local` service: "talks to a local service you set up: <name>" and, with `mesh: true`,
+  "can send meshes of your design to <name>"; for each `physical` entry:
+  "can start and stop machines: <label>" with its `machine_kind`. A `toolbar-widget` adds
+  "shows a status area in the toolbar"; timed refresh says "can refresh while its panel or status
+  area is visible, at most once every 2 seconds". The approval stores a hash of
+  (`commands`, `permissions` (including `local` entries and their `mesh` flags), `limits`, `world`, each entry's `name`, `kind`, `effect`, `machine_kind` and `confirm`, and each surface's `kind` and `entry`) in preferences
   (`approved_plugins: {id: hash}`, max 256 entries). A plugin update that changes any of these needs a
   new approval; a code-only update with the same permissions does not (the sandbox bounds it to what was
-  approved). `disabled_plugins` keeps its meaning.
+  approved). Local service addresses are the user's own settings and are not in the approval hash;
+  changing an address cancels pending physical confirmations. `disabled_plugins` keeps its meaning.
 - An update never opts the user in. An update that changes what was approved (a new entry, a changed
   kind or effect, new permissions) stops the plugin until it is approved again, and the Plugins page
   lists exactly what is new or changed before any of it appears in menus, surfaces (9b) or command
@@ -601,7 +631,7 @@ the right outcome for a plugin it cannot run.
 | `engine.run` calls | 10 000 per transaction, 1 000 per handler call |
 | JSON in either direction | 4 MiB per value, depth 64 |
 | Copy into the host per call | wasmtime copies a host call's arguments out of the guest before our own checks run, up to 128 MiB by default; the host sets `Store::set_hostcall_fuel` to 8 MiB (above the largest per-call input, 4 MiB of JSON), so a bigger argument traps before it is copied. An export's result (`render`, `markers`, `execute`) lives in the guest's memory, which `memory_mib` bounds; S2 checks whether hostcall fuel also covers lifting results and records the answer in the S2 PR |
-| `net.fetch` | 64 per handler call; request body 1 MiB; response body 8 MiB; 64 headers, 8 KiB each; 20 s per request; `https` only; no redirects followed (a 3xx is returned as is) |
+| `net.fetch` | 64 per handler call; request body 1 MiB (host-made mesh: 256 MiB, once per handler call, 6.5a); response body 8 MiB; 64 headers, 8 KiB each; 20 s per request; `https` only except approved local services (6.5a); no redirects followed (a 3xx is returned as is) |
 | `store` | 4 MiB total per plugin, 1 024 keys, key `[a-z0-9][a-z0-9._-]{0,127}`, value 1 MiB; one file per plugin (6.6) |
 | Panel | 2 000 items, 32 cells per row, 4 KiB per text, 64 options per choice, ids at most 64 bytes; every `f64` finite, `min <= value <= max` (value clamped), `step > 0`, `selected` within `options`; a panel that breaks a rule is refused whole (`limit` or `invalid`) and the previous one stays |
 | Markers | 500, label 80 chars, finite coordinates within 1e6 mm |
@@ -625,8 +655,8 @@ at lower cost, and they also end calls that wait inside the host, which fuel wou
    An S2 test
    classifies every `Session` field as saved here, document, history, cache or host-owned (`path`,
    `log`, `param_check`, ...), so a field added later cannot be missed silently.
-3. Sends `execute(entry, params)` to the plugin's worker and serves its `engine.run` calls until the
-   worker answers or the deadline passes. Each served call goes through the command policy (6.4) and
+3. Sends `execute(entry, params)` to the plugin's worker and serves its `engine.run` calls
+   until the worker answers or the deadline passes. Each served call goes through the command policy (6.4) and
    then a nested `Session::execute`.
    - Frames: `Session::execute` uses one `outermost` flag (`frames::Nested`, `lib.rs:794-798`) both
      to map world picks into the active component's frame and to write the crash journal. The two
@@ -714,7 +744,8 @@ Every `engine.run` from a plugin passes these checks in order:
    (`document.inspect`, `document.metadata`, `model.faces`, `model.edges`, `engine.describe`) and
    gets `denied` from `host.request-execute`; its network rights are unchanged. The agent chat gate
    runs `read` entries without asking, and treats `edit` entries (every transaction, and actions
-   without `effect: read`) like the edits it already asks about.
+   with `effect: edit`) like the edits it already asks about. A `physical` action has the same host
+   function rights as `edit`, with a human confirmation on every call (6.4a).
 
 Plugins never call each other: `plugin.*` is on the deny list (rule 2) and no import reaches another
 plugin. If plugins ever need to cooperate, it will be through host events, where a failing listener
@@ -723,7 +754,34 @@ never fails the caller.
 Handler calls are queued to the UI thread and served in the next frame (the worker asks the UI to
 repaint). A command refused by the policy returns `denied` with the rule that refused it.
 
+### 6.4a Physical actions
+
+- **Confirmation.** A `physical` action declares `machine_kind` and `confirm: {machine, action}`.
+  The host shows the plugin name, machine kind, machine, action and exact params as plain text;
+  a different machine needs a different entry. No plugin code runs before the person presses the
+  named action. `plugin.act`, its shorthand and `host.request-execute` all ask. Automated callers
+  and `ui.click` cannot accept; headless hosts return `denied` ("this action needs confirmation in
+  the app window"). Development mode, approval flags and saved permissions cannot bypass it.
+- **Waiting.** No worker or design lock is held; the 30 s deadline starts after the press. One
+  confirmation may be pending per plugin; another returns "a confirmation is already open".
+  Params are frozen. Changing the design (tab or generation), address or approval, or stopping the
+  plugin cancels it. Cancel returns `denied`, reported as `executed` for `request-execute`.
+- **Host-only token.** On the press the host draws 32 random bytes, encoded as lowercase hex, bound
+  to plugin id, entry and SHA-256 of RFC 8785 canonical params, with a 60 s expiry. It attaches
+  `Plugin-Confirmation` to every `local:` request of that call, never to `net` requests or other
+  calls, and stops attaching it at expiry. Plugins never receive the token; setting that header
+  (case-insensitively, including through a secret declaration) is `denied`. Tokens stay in host
+  memory, are redacted from responses as secrets are (6.5), and from logs, crash reports and replay.
+- **Companion.** Machine-moving routes require the header and refuse a start without it. The
+  companion accepts a value once on those routes, retaining seen values for 60 s, and refuses reuse;
+  an uncertain start needs a new confirmation. Other local programs need the companion's own
+  password (section 12).
+- **Rights.** The confirmed entry has `edit` action rights (6.4): network, no direct design edits;
+  requested transactions retain the checks of 6.3 and 6.4.
+
 ### 6.5 Network and secrets
+
+These rules cover `permissions.net`; local services use 6.5a.
 
 - `net.fetch` runs on the worker thread with `ureq` (already a dependency of the app; the host crate
   takes it under `cfg(not(target_arch = "wasm32"))`). The URL must parse, be `https`, and its origin
@@ -745,6 +803,33 @@ repaint). A command refused by the policy returns `denied` with the rule that re
   before the plugin sees them. That stops the plain echo; a server that encodes the token
   differently is a server the user chose to trust with it.
 - Requests carry `User-Agent: SolidCraft/<version> plugin/<id>/<plugin version>`; no cookies are kept.
+
+### 6.5a Local services
+
+- **User-set address.** `permissions.local` names at most 2 services with default ports. The Plugins
+  page stores each base URL per plugin and service, outside plugin.json and the design; no plugin
+  call can read or set it. A default port is only a hint. Until setup, requests return `failed`:
+  "set the address of dutchman-print on the Plugins page" (using the service's name).
+- **Routing.** `net.fetch` accepts `local:<name>/path?query`; unknown names return `denied`. The host
+  substitutes the user-set origin, exactly `http://host[:port]` or `https://host[:port]`, without
+  path, query, fragment or user info. The plugin supplies a path starting with one `/` and optional
+  query, never an authority, scheme, fragment or user info. Local requests share `net`'s limits
+  (6.2), no redirects, secrets and redaction (6.5); a local secret attaches only to its service's
+  current origin. Confirmation headers follow 6.4a.
+- **Mesh body.** A `local:` request may set `mesh` with an empty `body`; a non-empty `body` with it is `invalid`.
+  Without the service's `mesh: true`, or on a `net` request, `mesh` is `denied`. Empty `bodies`
+  uses the current selection's bodies; otherwise each name must exist or the request is `invalid`.
+  The host uses the same mesh-writing code as `file.save_mesh`, in memory: `three-mf` only,
+  quality `standard`, `fine` or `finest`. It sets `Content-Type: model/3mf` and sends the body;
+  the plugin never sees the bytes or a path. This reads the design and is allowed in `read`,
+  `physical` and `edit` actions. At most one mesh request per handler call, up to 256 MiB;
+  a second is `limit`, a bigger mesh is `failed` with a message naming its size. Other limits apply.
+- **Local only.** Allowed addresses are loopback (`127.0.0.0/8`, `::1`), private (RFC 1918,
+  `fc00::/7`), link-local (`169.254.0.0/16`, `fe80::/10`), or `.local` names with every resolved
+  address in those ranges. Each request resolves and checks again, pins the checked address for
+  connection, disables proxies and checks reused connections, preventing DNS rebinding to public
+  addresses. IPv4-mapped IPv6 addresses are checked as IPv4. Only this path allows plain `http`;
+  `https` verifies the user-set name. Raw URLs still follow `permissions.net`.
 
 ### 6.6 Store
 
@@ -777,21 +862,36 @@ turned off or at another version, and the metadata comes back unchanged.
   enforces) and draws the last `render()` result with `ui_kit` widgets and `theme::Tokens` colours
   (`tone` maps to tokens). Inputs keep their edited values locally; an action event carries all of them
   and the viewport camera.
-- After every `handle` call (and when the panel opens) the host calls `render()` and then `markers()`
-  in the same worker turn, and the window draws the new result from the next frame. If either call
-  fails or breaks a limit, the previous panel and pins stay and the panel shows the error line.
-- Panel content and pins belong to the design (tab and generation) their handler call started in,
-  like its other calls (section 3). Results for a design that is no longer active are dropped. When the active tab
-  changes, the host hides the pins and greys the panel at once, sends `design-changed`, and shows the
-  new design's panel and pins only when that call's `render()` and `markers()` arrive.
+- After every `handle` call (and when the panel or widget first becomes visible) the host calls
+  `render()` and then `markers()` in the same worker turn, and draws the new result from the next
+  frame. If either call fails or breaks a limit, the previous panel, widget and pins stay and the
+  panel shows the error line.
+- Panel content, widget and pins belong to the design (tab and generation) their handler call
+  started in, like its other calls (section 3). Results for a design that is no longer active are
+  dropped. When the active tab changes, the host hides the pins and greys the panel and widget at
+  once, sends `design-changed`, and shows the new design's content only when that call's `render()`
+  and `markers()` arrive.
 - While the panel is open the host draws the pins from the last `markers()` result in the
   viewport (projected, with the label on hover, colours from tokens). A click on a pin sends
   `marker(id)` and is not a pick in the model.
-- `design-changed` is sent at most every 500 ms while the panel is open, when the active tab or the
-  document itself changes (a different `Arc<Document>`: an edit, undo, redo, open). It does not follow
-  `Session.revision`, because `select.set` also bumps that, and a plugin that selects something in
+- `design-changed` is sent at most every 500 ms while the panel or widget is visible, when the active
+  tab or the document itself changes (a different `Arc<Document>`: an edit, undo, redo, open). It does
+  not follow `Session.revision`, because `select.set` also bumps that, and a plugin that selects something in
   its `design-changed` handler would otherwise wake itself every 500 ms.
 - While a handler runs, the panel shows a small busy indicator and keeps the last content.
+
+### 6.7a Timed refresh
+
+- `host.schedule-refresh(seconds)` is for panel handlers, including `render()` and `markers()`;
+  transactions and action entries get `denied`. The host clamps `seconds` to at least 2 s and may
+  delay it further. One pending refresh per plugin: a new call replaces the old one. At the due
+  time the host sends `refresh` to `panel.handle`, then renders as usual; no handler runs in parallel.
+  Missed ticks coalesce into one event, never a queue of catch-up calls.
+- It runs only while the panel or its `toolbar-widget` is visible. Hiding both drops the pending
+  event and timer; the host remembers only the requested interval. Showing either starts a fresh
+  interval, with no immediate catch-up. The first visible widget gets `opened` just like a panel;
+  opening both does not double events. A handler schedules again to keep polling. Stopping the
+  plugin or dropping its Store clears the interval; a fresh instance starts from `opened`.
 
 ### 6.8 Errors
 
@@ -907,7 +1007,7 @@ From public documentation of review tools and open standards (no product's text 
    the pin stays at the recorded point either way, and the panel says when the entity is gone.
 5. Reply opens a text field under the note; Send posts a comment. Replies load when a note is shown.
 6. Refresh fetches the list again; the panel also refreshes when opened and when the design's
-   connection changes. There is no background polling in 0.1.
+   connection changes. This pilot does not use timed refresh (6.7a).
 7. Pins: one per note that has a point; accent tone for open, done tone for resolved; resolved pins
    are hidden while the list shows open notes only. Clicking a pin moves its note to the top of the
    list, expanded.
@@ -1055,6 +1155,12 @@ visible to the token; a 403 or 429 with rate-limit headers says when to try agai
 - Re-pinning a detached note; editing note text; a "created on an older revision" badge once designs
   have a persistent revision id (PDM).
 
+Another use (#4980): a printing plugin talks to a companion service the user installs, which runs an
+external slicer and talks to printers. It declares a local service with `mesh: true` and sends the
+selected bodies as a host-made 3MF request body (6.5a). A toolbar widget shows status and progress,
+with scheduled refresh while visible. Starting or stopping a printer is
+a `physical` action with a host-drawn confirmation naming the machine and action.
+
 ## 9a. Importer plugins (`importer-plugin`, unstable)
 
 Asked for in #1221 by the author of an importer that converts other CAD formats into `.solidcraft`
@@ -1103,19 +1209,29 @@ accessibility, and the generic plugin icon (section 5). A plugin never draws, mo
 | `import-menu` | `importer-plugin` | its `formats` | the same, as an item under File > Import |
 | `toolbar-entry` | `command-plugin`, `panel-plugin` | `entry` | a button that runs `plugin.<id>.<entry>`, on the plugins' ribbon panel the host picks; in 0.1 only for an entry that needs no parameters. This is the Design > Utilities case of #4933, and its placement rules should stay in step with that proposal |
 | `panel` | `panel-plugin` | its panel | a button next to the toolbar entries that opens `plugin.panel {plugin}` |
+| `toolbar-widget` | `panel-plugin` | its panel's `status` item | a compact status area with up to 2 text rows, optional progress, a state colour and a menu button that opens `plugin.panel {plugin}` |
 
-- **Every surface runs a command** (`plugin.import`, `plugin.<id>.<entry>`, `plugin.panel`), so
-  nothing a surface does is out of reach of scripts, the CLI and MCP.
+- **Every surface runs a command** (`plugin.import`, `plugin.<id>.<entry>`, `plugin.panel`),
+  through the same entry points as scripts, the CLI and MCP. Physical actions always need
+  the human confirmation of 6.4a.
 - **The host owns placement.** Surfaces are placed in host order (plugin id, then entry or kind), never
   in manifest order. A surface is identified by its plugin id plus `entry` (or `kind`), so it can never
-  take a core slot or another plugin's. Caps: per plugin, 8 surfaces, at most one `open-source` and one
-  `import-menu`; across plugins, 8 `open-source` items, 16 items in File > Import and 32 buttons on the
-  plugins' panel. Past a cap, the surfaces later in host order are not placed, and neither is one whose
-  label equals a core item's in the same place; the Plugins page says which and why, and their commands
-  stay callable.
+  take a core slot or another plugin's. Caps: per plugin, 8 surfaces, at most one `open-source`, one
+  `import-menu` and one `toolbar-widget`; across plugins, 8 `open-source` items, 16 items in File >
+  Import, 32 buttons on the plugins' panel and 4 widgets. Past a cap, the surfaces later in host order
+  are not placed, and neither is one whose label equals a core item's in the same place; the Plugins
+  page says which and why, and their commands stay callable.
 - **Labels** are plugin text, shown as plain text: 1-40 chars, no control characters, translated
   through `locales/` (5a). Each surface names its plugin in its tooltip, and a `--plugin-dev` plugin's
   surfaces are marked as such, so people can tell core UI from plugin UI.
+- **Widget state.** The panel's `render()` result may contain one `status` item. Its `lines` feed
+  the widget's text rows (0-2, each under the surface label rules above), `progress` feeds its
+  optional progress bar (finite, 0-1), and `state` is `idle`, `busy`, `attention` or `error`, mapped
+  to the host's theme colour. The panel draws that same item; no plugin code draws the widget.
+  A second status item or an invalid field refuses the whole render and keeps the previous state,
+  as in 6.7. Without a status item the widget shows only its menu button. Its menu offers Open panel,
+  which runs `plugin.panel {plugin}`; it never starts a machine itself. Hidden panels still render
+  for a visible widget; pins stay hidden unless the panel is open. Refresh follows 6.7a.
 - **Lifetime.** Surfaces appear only while the plugin is approved, turned on and loaded, and disappear
   as soon as it stops (6.1). A new or changed surface needs a new approval (6.1).
 - A `kind` the plugin's world does not allow, or an `entry` that is not listed, refuses the plugin
@@ -1127,7 +1243,7 @@ accessibility, and the generic plugin icon (section 5). A plugin never draws, mo
 |---|---|---|
 | S1 | this document and `wit/solidcraft-plugin.wit` (this PR); docs/plugins.md's milestone 1 then points here | maintainer agrees on the shape in #1221 |
 | S2 | engine seam + `plugin.run` + `crates/plugin-host` (load, limits, WASI context, transactions, policy, store) + plugin.json v1 parsing, its generated schema and `solidcraft-cli plugin check`, `--plugin-dev`, and approval on the Plugins page | tests T1-T9 pass; size and compile time measured |
-| S3 | handlers, `net` + secrets, `host.request-execute`, action entries and `plugin.act`, panel window, pins, `plugin.panel`, `plugin.list`; `toolbar-entry` and `panel` surfaces (9b) | tests T10-T15, T25, T26; screenshots of a test panel |
+| S3 | handlers, `net` + secrets, `host.request-execute`, action entries and `plugin.act`, panel window, pins, `plugin.panel`, `plugin.list`; `toolbar-entry`, `panel` and `toolbar-widget` surfaces (9b), local services and host-made mesh bodies (6.5a), physical confirmations and host-only headers (6.4a), timed refresh (6.7a) | tests T10-T15, T25, T26, T28-T37; screenshots of a test panel, widget and confirmation |
 | S3b | importers (9a): `input`, `output`, `plugin.import`, routing of `formats` in `doc.open`, `reads_input_folder`; `open-source` and `import-menu` surfaces (9b); the `@unstable` mark goes once a real importer runs through it | tests T17-T20, T27 |
 | S4 | spur-gear example + author guide + `solidcraft-cli plugin test` + CI job that builds `examples/plugins/*` for `wasm32-wasip2` and runs `plugin test` on them | T16, T22 |
 | S5 | review-notes plugin | section 9 acceptance |
@@ -1223,6 +1339,44 @@ feature), so they need no guest toolchain.
   result, one undo step); turning the plugin off removes the button in the same frame.
 - T27 an `open-source` item imports a file through `plugin.import`, shows the report and opens the
   design only on Open; an update that adds an `open-source` surface stops the plugin until approved.
+- T28 a `local:dutchman-print/status` request before setup returns the named address error; setting
+  loopback, RFC 1918, ULA, link-local and `.local` addresses routes only there, replaces the secret
+  header and redacts its echo; the plugin cannot choose a different authority, and local requests
+  share `net`'s limits.
+- T29 a public address, a `.local` name resolving to public or mixed addresses, IPv4-mapped public
+  IPv6, and DNS rebinding to a public address are refused before connecting; a checked local HTTP
+  request works, redirects are not followed, and raw HTTP URLs remain denied.
+- T30 a physical call by shorthand, `plugin.act` or `host.request-execute` runs no plugin code until
+  the person presses its host-drawn confirmation; Cancel, headless hosts and `ui.click` cannot
+  start it, even with development mode or approval flags. Its host rights then equal `edit`.
+- T31 the host creates a random token bound to plugin, entry and params hash, attaching it to every
+  `local:` request of the confirmed call until its 60 s expiry, never to `net` or another call.
+  Plugin-set `Plugin-Confirmation` headers in any case, including secret declarations, get `denied`.
+  The companion refuses a start without the header and refuses reuse, retaining seen values for
+  60 s. The plugin receives no token, including in echoed responses; logs, crash reports and replay
+  redact it. Changing the design, address or approval, or stopping the plugin cancels a pending
+  confirmation; a second pending confirmation is refused.
+- T32 a widget shows exactly its panel status's two lines, progress and host state colour, and its
+  menu opens the panel; excess lines, bad labels, non-finite or out-of-range progress, and duplicate
+  status items keep the last valid panel and widget. No status item leaves only the menu button.
+- T33 a second widget in one plugin is refused; a fifth across plugins is not placed in host order
+  and the Plugins page says why; a non-panel world cannot declare one, and disabling the plugin
+  removes it in the same frame.
+- T34 with a test clock, `schedule-refresh(0)` delivers no event before 2 s; a second schedule replaces
+  the first, and a busy handler gets at most one coalesced `refresh`. Hidden panel and widget drop
+  the timer, showing either resumes after a fresh interval, and stopping clears it; actions and
+  transactions get `denied`.
+- T35 adding or changing a local service, physical confirmation or widget kind requires approval
+  again; changing only the user's local address does not. The approval screen names the local
+  services, machine actions, widget and visible-only refresh limit.
+- T36 with `mesh: true`, empty `bodies` sends only the selected bodies; named bodies send only
+  those bodies, and an unknown name is `invalid`. The local test server receives valid 3MF matching
+  `file.save_mesh` at each quality with `Content-Type: model/3mf`; `read`, confirmed `physical`
+  and `edit` actions work, and the plugin receives no mesh bytes.
+- T37 `mesh` without `mesh: true` or on `net` is `denied`; a non-empty `body` with `mesh` is
+  `invalid`. A 256 MiB mesh works; a larger one is `failed`, names its size and sends
+  nothing; a second mesh request in one handler call is `limit`. Adding `mesh: true` needs approval
+  again, and the approval screen names the service allowed to receive the design's meshes.
 
 ## 12. Threat model
 
@@ -1230,6 +1384,12 @@ Trusted: the app, the user, the user's approval. Untrusted: plugin code and its 
 files (their `plugin.*` metadata is input to plugins and to the host); every network response; any
 text from other team members. The sandbox goal is: a plugin can do only what its approved
 permissions say, and cannot crash the app or corrupt a design.
+
+A plugin cannot start a machine through a companion that follows 6.4a without a person pressing the
+confirmation: only the host can attach `Plugin-Confirmation`. This header does not keep other local
+programs out; the companion's own password does that. Machine safety still belongs to the companion.
+
+A plugin can send the user's geometry as a host-made mesh only to a local service the user set up and approved for it.
 
 Frozen depth for 0.1 (findings beyond this are out of scope, not defects):
 
@@ -1239,10 +1399,17 @@ Frozen depth for 0.1 (findings beyond this are out of scope, not defects):
   side channels and speculative-execution attacks inside wasmtime; bugs in wasmtime or Cranelift
   themselves (handled by keeping wasmtime current); a plugin wasting its own approved budgets (it is
   stopped by the limits, nothing more); what a plugin does with data on an origin the user approved;
-  social engineering on the approval screen beyond showing the permissions plainly.
+  social engineering on the approval screen beyond showing the permissions plainly; what a local
+  service does with data it receives; machine safety and services that accept unconfirmed machine
+  commands (a companion must require the header and refuse reuse, 6.4a); eavesdropping or tampering
+  on plain local HTTP (use HTTPS for that protection).
 - In: escaping the permissions; reaching another plugin's entries or data; reading files other than
   an imported one (and its folder with `reads_input_folder`); writing files; reaching servers other than those that hold
-  a certificate for an approved origin (section 6.5);
+  a certificate for an approved origin (section 6.5) or the checked local address the user set
+  (6.5a); local requests reaching public addresses through DNS rebinding; running a declared physical
+  entry without human confirmation; attaching its token outside the bound call or after expiry;
+  plugin-supplied confirmation headers or a companion accepting reuse; widget text bypassing label
+  caps or host colours; refresh running while both panel and widget are hidden;
   reading secrets; editing the design from a handler; leaving a partial edit; growing app memory or
   time without bound; crashing through any host function input.
 
