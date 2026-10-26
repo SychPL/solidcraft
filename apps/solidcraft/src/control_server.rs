@@ -520,13 +520,17 @@ fn serve_with(
                             r
                         }
                     }
-                } else if method == "control.subscribe" && events.is_some() {
-                    // Its events already say how the design moves; a second answer could only
-                    // arrive behind a newer one.
-                    json!({"ok": false, "error": "already subscribed: this connection is sent design.changed lines; ask document.revision for the design now"})
                 } else if let Some(p) = pending.as_ref().filter(|_| late.is_none()) {
                     // Nothing more is queued behind it, to run unseen when it ends.
                     json!({"ok": false, "busy": true, "error": busy_message(p, &method)})
+                } else if method == "control.subscribe" && events.is_some() {
+                    if late.is_some() {
+                        // As below: finished, and the client moved on without asking.
+                        pending = None;
+                    }
+                    // Its events already say how the design moves; a second answer could only
+                    // arrive behind a newer one.
+                    json!({"ok": false, "error": "already subscribed: this connection is sent design.changed lines; ask document.revision for the design now"})
                 } else {
                     if late.is_some() {
                         // Finished, and the client moved on without asking: it is dropped.
