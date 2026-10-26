@@ -936,6 +936,17 @@ fn a_folder_the_agent_saved_a_design_in_stays_its_folder() {
     }
     assert!(!proj.join(".env").exists());
     assert_eq!(std::fs::read_dir(&other).unwrap().count(), 0);
+    // A link beside it to a design here counts where it leads, never where it lies.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(proj.join("part.step"), other.join("link.step")).unwrap();
+        std::os::unix::fs::symlink(proj.join("part.solidcraft"), other.join("link.solidcraft")).unwrap();
+        tool(&mut s, "open", json!({"path": at(&other, "link.step")}));
+        tool(&mut s, "open", json!({"path": at(&other, "link.solidcraft")}));
+        let r = raw_tool(&mut s, "save", json!({"path": at(&other, "x.solidcraft")}));
+        assert!(r.to_string().contains("outside the folders this agent may use"), "{r}");
+        assert!(!other.join("x.solidcraft").exists());
+    }
     let _ = std::fs::remove_dir_all(&base);
 }
 

@@ -219,13 +219,8 @@ impl Server {
                 // it, so it was one of the agent's folders already. Only paths given in full: a
                 // running app resolves a relative one against its own working folder.
                 if result["isError"] != true {
-                    for file in design_files(name, &args) {
-                        let file = std::path::Path::new(&file);
-                        if file.is_absolute()
-                            && let Some(dir) = file.parent()
-                        {
-                            self.scope = self.scope.take().map(|s| s.with_design_folder(dir));
-                        }
+                    for file in design_files(name, &args).iter().filter(|f| std::path::Path::new(f).is_absolute()) {
+                        self.scope = self.scope.take().map(|s| s.with_design_file(file));
                     }
                 }
                 if let Some(note) = backend.notice()

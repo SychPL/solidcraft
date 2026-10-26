@@ -219,21 +219,29 @@ impl PathScope {
     }
 
     /// Also the folder of the design at `path` (the open design), when
-    /// [`design_folder_refusal`] allows it; hidden entries inside it stay out of reach.
+    /// [`design_folder_refusal`] allows it; hidden entries inside it stay out of reach. It is the
+    /// folder of the file as [`PathScope::check`] resolves it: a link to a design elsewhere puts
+    /// the folder it leads to in reach, never the folder the link lies in.
     pub fn with_design(self, path: Option<&str>) -> PathScope {
-        let dir = path
-            .map(std::path::Path::new)
-            .and_then(std::path::Path::parent)
-            .map(|d| if d.as_os_str().is_empty() { std::path::Path::new(".") } else { d });
-        match dir {
+        let file = path.and_then(|p| resolve(std::path::Path::new(p)).ok());
+        match file.as_deref().and_then(std::path::Path::parent) {
             Some(d) => self.with_design_root(d),
             None => self,
         }
     }
 
-    /// Also `dir`, a folder an agent opened or saved a design in (#7181), on the same terms as
-    /// the open design's folder. On Windows its text is judged first, as [`PathScope::check`]
+    /// Also the folder of `path`, a design file an agent opened or saved (#7181), on the same
+    /// terms as the open design's. On Windows its text is judged first, as [`PathScope::check`]
     /// judges a path: resolving a UNC path would already make Windows connect out.
+    pub fn with_design_file(self, path: &str) -> PathScope {
+        if cfg!(windows) && windows_refusal(path).is_some() {
+            return self;
+        }
+        self.with_design(Some(path))
+    }
+
+    /// Also `dir`, a folder an agent opened or saved a design in (a request's `design_folders`),
+    /// on the same terms as the open design's folder, its text judged first on Windows.
     pub fn with_design_folder(self, dir: &std::path::Path) -> PathScope {
         if cfg!(windows) && windows_refusal(&dir.to_string_lossy()).is_some() {
             return self;
