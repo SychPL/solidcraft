@@ -1,0 +1,9 @@
+defaults: {"connectAtStart": false, "openAtStart": false, "lastAgent": "", "open": false, "state": "off"}
+shot /home/runner/work/solidcraft/solidcraft/shots/settings-ai-start-options.png
+launch 1: {"state": "ready", "open": true, "connectAtStart": true, "openAtStart": true, "lastAgent": "local-endpoint", "currentAgent": "local-endpoint", "agent": "Local endpoint · llama3.2"} notices: []
+launch 2: {"state": "ready", "open": true, "connectAtStart": true, "openAtStart": true, "lastAgent": "local-endpoint", "currentAgent": "local-endpoint", "agent": "Local endpoint · llama3.2"} notices: []
+shot /home/runner/work/solidcraft/solidcraft/shots/launch-connects-last-agent-ready.png
+launch 2: {"state": "failed", "open": true, "connectAtStart": true, "openAtStart": true, "lastAgent": "broken-agent", "currentAgent": "broken-agent", "agent": ""} notices: ["The agent stopped.\nbroken-agent: not signed in"]
+launch 3: {"state": "failed", "open": true, "connectAtStart": true, "openAtStart": true, "lastAgent": "broken-agent", "currentAgent": "broken-agent", "agent": ""} notices: ["The agent stopped.\nbroken-agent: not signed in"]
+shot /home/runner/work/solidcraft/solidcraft/shots/launch-connection-failed-retry.png
+Retry handle: [{"name": "agent_chat:connect", "x": 1048.0, "y": 268.0}]
