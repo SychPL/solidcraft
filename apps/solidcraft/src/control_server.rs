@@ -473,6 +473,8 @@ fn serve_with(
     let mut pending: Option<Pending> = None;
     let mut events: Option<Subscription> = None;
     loop {
+        // A first `control.subscribe` on its way to the window (#6985).
+        let mut joining = None;
         let line = match read_line(&mut reader, MAX_LINE) {
             Ok(Some(l)) => String::from_utf8_lossy(&l).into_owned(),
             Ok(None) => break,
@@ -484,8 +486,6 @@ fn serve_with(
         if line.trim().is_empty() {
             continue;
         }
-        // A first `control.subscribe` on its way to the window (#6985).
-        let mut joining = None;
         let reply = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => {
                 // The first request must carry the token; later ones on the same connection may.
