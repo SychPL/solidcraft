@@ -653,7 +653,7 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
     if let Some(s) = &scope {
         let roots: Vec<String> = s.roots().iter().map(|r| r.display().to_string()).collect();
         eprintln!(
-            "solidcraft mcp: files limited to {} and the open design's folder (--allow-path DIR adds one, --allow-any-path lifts the limit)",
+            "solidcraft mcp: files limited to {} and the folders of designs opened or saved here (--allow-path DIR adds one, --allow-any-path lifts the limit)",
             roots.join(", ")
         );
         let design_dir = flag(args, "--in")

@@ -124,7 +124,9 @@ reads, writes or deletes (command paths such as `file.export`'s `path` or `doc.r
 `dir`, `ui.render`, `ui.screenshot`) must then lie inside one of those folders after `..` and
 symlinks are resolved, or the request fails with `… outside the folders this agent may use …`.
 The app adds its own recovery folder and, when it lies safely inside the home folder and not in
-a hidden folder, the open design's folder (whose hidden files stay out of reach). The bridged
+a hidden folder, the open design's folder (whose hidden files stay out of reach). With
+`allow_paths`, `design_folders: ["/abs/folder", …]` (at most 16) names folders the agent opened
+or saved a design in; each counts on the open design folder's terms. The bridged
 MCP server sends its folders this way on every request ([mcp.md](mcp.md)). Without
 `allow_paths` file paths are not limited: a client holding the token can do what the user can.
 

@@ -366,12 +366,21 @@ fn with_timings(mut reply: Value, timed: bool, rows: Vec<Value>, total_ms: f64) 
 /// file the request reaches must lie inside them (docs/mcp.md). `None`: it names none.
 pub fn request_scope(app: &SolveApp, params: &Value) -> Result<Option<vfs::PathScope>, String> {
     let Some(allowed) = params.get("allow_paths") else { return Ok(None) };
-    let Some(roots) = allowed.as_array().and_then(|a| a.iter().map(|r| r.as_str().map(std::path::PathBuf::from)).collect::<Option<Vec<_>>>()) else {
+    let folders = |v: &Value| v.as_array().and_then(|a| a.iter().map(|r| r.as_str().map(std::path::PathBuf::from)).collect::<Option<Vec<_>>>());
+    let Some(roots) = folders(allowed) else {
         return Err("`allow_paths` must be a list of folders".into());
+    };
+    // The folders the agent opened or saved a design in (#7181), judged as the open design's is.
+    let designs = match params.get("design_folders") {
+        None => Vec::new(),
+        Some(v) => folders(v)
+            .filter(|d| d.len() <= vfs::MAX_DESIGN_FOLDERS)
+            .ok_or_else(|| format!("`design_folders` must be a list of at most {} folders", vfs::MAX_DESIGN_FOLDERS))?,
     };
     // Plus the app's own recovery folder and, when it is a safe one, the open design's folder.
     let roots = roots.into_iter().chain(solidcraft_engine::recovery::default_dir());
-    Ok(Some(vfs::PathScope::new(roots).with_design(app.session.path.as_deref())))
+    let scope = designs.iter().fold(vfs::PathScope::new(roots), |s, d| s.with_design_folder(d));
+    Ok(Some(scope.with_design(app.session.path.as_deref())))
 }
 
 /// What a picture of the view shows: the model as the window shows it (theme and colour vision
@@ -420,6 +429,7 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
     let mut p = req.params.clone();
     if let Some(o) = p.as_object_mut() {
         o.remove("allow_paths");
+        o.remove("design_folders");
     }
     vfs::scoped(Some(scope), || dispatch(app, ctx, &req.method, &p))
 }
@@ -1914,6 +1924,47 @@ mod tests {
         let reply = save_screenshot(&image, None);
         assert_eq!(reply, json!({"ok": true, "result": {"path": path.to_string_lossy(), "width": 4, "height": 3}}));
         assert!(path.is_file());
+    }
+
+    /// A request's `design_folders` (where its MCP agent opened or saved a design, #7181) count
+    /// as the open design's folder does: their files are reachable, their hidden files and the
+    /// folders beside them are not, and a list that is not one of at most
+    /// `vfs::MAX_DESIGN_FOLDERS` folders is refused.
+    #[test]
+    fn a_requests_design_folders_count_as_the_open_designs() {
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        let mut app = SolveApp::new(s, Services::default());
+        let base = vfs::temp_dir().join(format!("solidcraft-control-design-folders-{}", std::process::id()));
+        let (root, proj, out) = (base.join("root"), base.join("proj"), base.join("out"));
+        for d in [&root, &proj.join(".git"), &out] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let at = |d: &std::path::Path, f: &str| d.join(f).to_string_lossy().to_string();
+        let mut call = |path: String, designs: Value| {
+            let params =
+                json!({"command": "file.export", "params": {"path": path}, "allow_paths": [root.to_string_lossy()], "design_folders": designs});
+            let (req, _rx) = ControlRequest::new("engine.execute", params);
+            match handle(&mut app, &crate::fonts::test_context(), &req) {
+                Outcome::Done(v) => v,
+                Outcome::Screenshot { path } => json!({"ok": true, "screenshot": path}),
+            }
+        };
+        let designs = json!([proj.to_string_lossy()]);
+        assert_eq!(call(at(&proj, "a.step"), designs.clone())["ok"], true);
+        for p in [at(&proj, ".env"), at(&proj, ".git/a.step"), at(&out, "a.step")] {
+            let v = call(p.clone(), designs.clone());
+            assert!(v["ok"] == false && v.to_string().contains("outside the folders this agent may use"), "{p}: {v}");
+        }
+        assert!(!proj.join(".env").exists() && !proj.join(".git/a.step").exists());
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "nothing written beside it");
+        let too_many = json!(vec![proj.to_string_lossy(); vfs::MAX_DESIGN_FOLDERS + 1]);
+        for bad in [json!(proj.to_string_lossy()), json!([1]), too_many] {
+            let v = call(at(&proj, "b.step"), bad);
+            assert!(v["error"].as_str().is_some_and(|e| e.contains("design_folders")), "{v}");
+        }
+        assert!(!proj.join("b.step").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// `ui.camera` reads the camera and sets it; its reply, passed back, sets the same view
