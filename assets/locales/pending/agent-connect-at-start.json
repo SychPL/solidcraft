@@ -1,0 +1,29 @@
+{
+  "en": {
+    "ai.prefs.connect_at_start": "Connect the last-used agent when SolidCraft starts",
+    "ai.prefs.connect_at_start_note": "Starts the agent you connected last (or the default one) in the background each time SolidCraft starts, so it is ready for chatting. Not when SolidCraft is started with --control. If it cannot connect, the Assistant shows Connection failed and a Retry button.",
+    "ai.prefs.open_at_start": "Open the Assistant panel when SolidCraft starts",
+    "ai.prefs.open_at_start_note": "Shows the Assistant panel (or its own window) each time SolidCraft starts. Not when SolidCraft is started with --control.",
+    "ui.agent_chat_last_missing": "The agent used last ({agent}) is not available any more. Pick an agent, then press Retry.",
+    "ui.agent_chat_retry": "Retry",
+    "ui.agent_chat_state_failed": "Connection failed"
+  },
+  "ja": {
+    "ai.prefs.connect_at_start": "SolidCraft の起動時に前回使用したエージェントに接続",
+    "ai.prefs.connect_at_start_note": "SolidCraft を起動するたびに、前回接続したエージェント (またはデフォルトのエージェント) をバックグラウンドで起動し、すぐにチャットできるようにします。--control を付けて起動した場合は行いません。接続できない場合、アシスタントに「接続に失敗しました」と「再試行」ボタンが表示されます。",
+    "ai.prefs.open_at_start": "SolidCraft の起動時にアシスタントパネルを開く",
+    "ai.prefs.open_at_start_note": "SolidCraft を起動するたびにアシスタントパネル (または独立したウィンドウ) を表示します。--control を付けて起動した場合は行いません。",
+    "ui.agent_chat_last_missing": "前回使用したエージェント ({agent}) は利用できなくなりました。エージェントを選んでから「再試行」を押してください。",
+    "ui.agent_chat_retry": "再試行",
+    "ui.agent_chat_state_failed": "接続に失敗しました"
+  },
+  "zh": {
+    "ai.prefs.connect_at_start": "SolidCraft 启动时连接上次使用的智能体",
+    "ai.prefs.connect_at_start_note": "每次启动 SolidCraft 时，在后台启动上次连接的智能体（或默认智能体），以便随时开始聊天。使用 --control 启动 SolidCraft 时不会这样做。如果无法连接，助手会显示“连接失败”和“重试”按钮。",
+    "ai.prefs.open_at_start": "SolidCraft 启动时打开助手面板",
+    "ai.prefs.open_at_start_note": "每次启动 SolidCraft 时显示助手面板（或其独立窗口）。使用 --control 启动 SolidCraft 时不会这样做。",
+    "ui.agent_chat_last_missing": "上次使用的智能体（{agent}）已不可用。请选择一个智能体，然后按“重试”。",
+    "ui.agent_chat_retry": "重试",
+    "ui.agent_chat_state_failed": "连接失败"
+  }
+}

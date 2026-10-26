@@ -122,6 +122,7 @@ impl eframe::App for App {
                 // Automation runs (a control port was asked for) leave the user's AI apps alone.
                 if !self.take_focus_unwanted {
                     solidcraft_ui_egui::ai_connect::begin(&mut self.solve);
+                    solidcraft_ui_egui::agent_chat::begin(&mut self.solve);
                 }
                 if let Some(dir) = self.starting.take() {
                     startup::started(&dir);
