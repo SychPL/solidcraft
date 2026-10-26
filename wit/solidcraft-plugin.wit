@@ -53,18 +53,25 @@ interface store {
     previous-version: func() -> option<string>;
 }
 
-/// HTTPS to the origins plugin.json names. Handlers only; a transaction gets `denied`.
+/// HTTP to approved origins or user-set local services. Handlers only; transactions get `denied`.
 interface net {
     use types.{plugin-error};
 
     enum method { get, post, put, patch, delete }
+    enum mesh-format { three-mf }
+    enum mesh-quality { standard, fine, finest }
+    /// Empty bodies means the current selection's bodies; unknown names are invalid.
+    record mesh-body { bodies: list<string>, format: mesh-format, quality: mesh-quality }
 
     record request {
         method: method,
-        /// An absolute `https://` URL on an origin plugin.json lists.
+        /// An absolute `https://` URL on an origin plugin.json lists, or
+        /// `local:<name>/path?query` for a local service whose base URL the user sets.
         url: string,
         headers: list<tuple<string, string>>,
         body: list<u8>,
+        /// Host-made body for a local service with mesh permission; `body` must then be empty.
+        mesh: option<mesh-body>,
     }
 
     record response {
@@ -85,8 +92,13 @@ interface net {
 interface host {
     use types.{json, plugin-error};
 
-    /// Run `entry` as a transaction after this handler returns. The panel gets `executed`.
+    /// Run `entry` as a transaction after this handler returns. A physical action instead
+    /// asks for human confirmation, then runs as an action. The panel gets `executed`.
     request-execute: func(entry: string, params: json) -> result<_, plugin-error>;
+
+    /// Replace this plugin's pending refresh. At least 2 s; only while panel or widget is
+    /// visible. Panel calls only; the handler gets `refresh`, never a concurrent call.
+    schedule-refresh: func(seconds: u32) -> result<_, plugin-error>;
 }
 
 /// Entries: what scripts, the CLI and agents can call (`plugin.run`, `plugin.act`).
@@ -112,6 +124,10 @@ interface panel {
     record choice { id: string, label: string, options: list<string>, selected: u32 }
     record styled { text: string, tone: tone }
 
+    enum widget-state { idle, busy, attention, error }
+    /// At most two plain-text labels, optional finite progress in 0-1, host-chosen colour.
+    record status { lines: list<string>, progress: option<f64>, state: widget-state }
+
     /// One thing on a row.
     variant cell {
         text(styled),
@@ -129,6 +145,7 @@ interface panel {
         text-input(text-input),
         number-input(number-input),
         choice(choice),
+        status(status),
         separator,
     }
 
@@ -148,7 +165,7 @@ interface panel {
     record executed { entry: string, outcome: result<json, string> }
 
     variant event {
-        /// The panel was opened.
+        /// The panel or widget first became visible.
         opened,
         /// A button was clicked, or a checkbox or choice changed; `inputs` holds every input.
         action(action),
@@ -158,6 +175,8 @@ interface panel {
         design-changed,
         /// What a `host.request-execute` did.
         executed(executed),
+        /// A visible panel or widget's scheduled refresh is due (6.7a).
+        refresh,
     }
 
     handle: func(e: event) -> result<_, plugin-error>;
