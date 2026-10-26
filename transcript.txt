@@ -1,0 +1,83 @@
+> {"id": 8, "method": "engine.execute", "params": {"command": "joint.create", "params": {"type": "revolute", "name": "Door hinge", "flip": true, "a": {"occurrence": 0, "point": [0, 0, 0]}, "b": {"occurrence": "Door", "point": [0, 0, 0]}}}}
+> {"id": 10, "method": "ui.camera", "params": {"yaw": 0.5, "pitch": 0.9, "fit": true}}
+> {"id": 11, "method": "engine.execute", "params": {"command": "joint.find_limits", "params": {"joint": "Door hinge"}}}
+{
+ "gap_method": "mesh",
+ "gap_tolerance_mm": 0.0,
+ "joint": 7,
+ "name": "Door hinge",
+ "overlapping_at_start": [],
+ "pairs": 1,
+ "refine_mm": 0.01,
+ "touching_at_start": [],
+ "values": [
+  {
+   "dof": "angle",
+   "index": 0,
+   "max": 17.872159090909093,
+   "max_by": {
+    "a": "Block:1",
+    "at": [
+     80.0,
+     30.0,
+     0.0
+    ],
+    "b": "Door:1"
+   },
+   "min": -320.1934793531984,
+   "min_by": {
+    "a": "Block:1",
+    "at": [
+     60.00575351210341,
+     50.0,
+     0.0
+    ],
+    "b": "Door:1"
+   },
+   "range": 360.0,
+   "unit": "deg",
+   "value": 0.0
+  }
+ ]
+}
+> {"id": 13, "method": "ui.click", "params": {"x": 415.625, "y": 973.0, "double": true}}
+> {"id": 16, "method": "ui.click", "params": {"x": 1461.0, "y": 590.0, "double": false}}
+> {"id": 19, "method": "ui.click", "params": {"x": 1459.65625, "y": 656.0, "double": false}}
+> {"id": 24, "method": "ui.click", "params": {"x": 1543.0, "y": 815.0, "double": false}}
+> {"id": 25, "method": "engine.execute", "params": {"command": "joint.list", "params": {}}}
+limits after OK: [{"limits": [-320.1, 17.8], "name": "angle", "unit": "deg", "value": 0.0}]
+> {"id": 27, "method": "engine.execute", "params": {"command": "motion.export_animation", "params": {"joint": "Door hinge", "from": -320.1, "to": 17.8, "samples": 80, "fps": 20, "width": 720, "height": 450, "path": "/home/runner/work/_temp/demo/door-range.gif", "camera": {"distance": 173.9591930449406, "fov": 0.0, "pitch": 0.9, "roll": 0.0, "target": [41.83477793432218, 31.839640567869957, 26.656723160809552], "up": "z", "yaw": 0.5}}}}
+> {"id": 28, "method": "ui.home", "params": {"sample": 2}}
+> {"id": 31, "method": "ui.camera", "params": {"yaw": 0.9, "pitch": 0.45, "fit": true}}
+> {"id": 32, "method": "engine.execute", "params": {"command": "joint.find_limits", "params": {"joint": "Hinge"}}}
+{
+ "gap_method": "mesh",
+ "gap_tolerance_mm": 0.040792156108742275,
+ "joint": 9,
+ "name": "Hinge",
+ "overlapping_at_start": [],
+ "pairs": 1,
+ "refine_mm": 0.01,
+ "touching_at_start": [
+  [
+   "Leaf B:1",
+   "Leaf A:1"
+  ]
+ ],
+ "values": [
+  {
+   "dof": "angle",
+   "index": 0,
+   "max": 239.99999999999997,
+   "max_by": "turn",
+   "min": -120.00000000000001,
+   "min_by": "turn",
+   "range": 360.0,
+   "unit": "deg",
+   "value": 59.99999999999999
+  }
+ ]
+}
+> {"id": 34, "method": "ui.click", "params": {"x": 479.625, "y": 973.0, "double": true}}
+> {"id": 38, "method": "ui.click", "params": {"x": 1459.65625, "y": 722.0, "double": false}}
+> {"id": 75, "method": "app.quit", "params": {"force": true}}
