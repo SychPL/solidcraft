@@ -181,17 +181,20 @@ sends it a line whenever the active design changes (#6985):
 ```
 
 - The reply is what `document.revision` answers then (and, like it, does not wait behind design
-  changes). From there on, each `design.changed` line carries what `document.revision` would
-  answer, sent when its `document_id` or `revision` differs from the last one this connection
-  was told: an edit, undo or redo, a design opened or started, a tab switched.
+  changes); no event comes before it. From there on, each `design.changed` line carries what
+  `document.revision` would answer, sent when its `document_id` or `revision` differs from the
+  last one this connection was told: an edit, undo or redo, a design opened or started, a tab
+  switched.
 - Lines are coalesced, not sent per frame: at most about ten a second, and changes made faster
   (a parameter dragged) are followed by one line with the latest. Once the design stops
   changing, the last line names it as it is.
 - An event has `event` and `params` and no `id`; every reply still has its request's `id`. Each
   event is a whole line of its own, between replies, never inside one. Ignore events you don't
   know.
-- Only connections that subscribed get events, until they close. Subscribing again on the same
-  connection only answers the design again.
+- Only connections that subscribed get events, until they close (or shut their sending side). A
+  second `control.subscribe` on a subscribed connection is refused with `already subscribed`;
+  ask `document.revision` for the design now. A `control.subscribe` that timed out or failed did
+  not subscribe the connection: send it again.
 
 ### Slow commands and the window (#1989)
 
