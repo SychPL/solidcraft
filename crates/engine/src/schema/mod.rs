@@ -56,6 +56,7 @@ mod tests;
 // The contracts, by command file.
 pub mod features;
 pub mod inspect;
+pub mod motion;
 
 pub use check::{Contract, Issue, ParamCheck, TypedContract, input_schema_for, output_schema_for, run_checked, run_checked_as};
 pub use types::*;
