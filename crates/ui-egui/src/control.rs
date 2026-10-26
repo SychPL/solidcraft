@@ -1330,6 +1330,8 @@ mod tests {
         assert!(third > second, "{third} after {second}");
         let stop = AtomicBool::new(false);
         assert_eq!(WATCH.wait(&(id.clone(), first), &stop, Duration::ZERO), Some((id.clone(), third)));
+        // New on a blank design reuses its tab: the box comes back first.
+        h.call("engine.execute", json!({"command": "edit.redo", "params": {}}));
         h.call("ui.documents", json!({"action": "new"}));
         publish_design(&mut h.app, &WATCH);
         assert!(now().is_some_and(|(other, _)| other != id), "{:?}", now());
