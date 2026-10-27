@@ -2,8 +2,17 @@
   "en": {
     "drive.rigid": "{joint} is a rigid joint: it holds its parts still, so it has nothing to drive. To let them move, change its type in Edit Joint: Revolute to rotate, Slider to slide, Cylindrical for both."
   },
+  "ar": {
+    "drive.rigid": "{joint} مفصل صلب: يثبّت أجزاءه في مكانها، لذا لا يوجد ما يمكن تحريكه. لتتحرك الأجزاء، غيّر نوعه في «تعديل المفصل»: Revolute للدوران، Slider للانزلاق، Cylindrical لكليهما."
+  },
+  "he": {
+    "drive.rigid": "{joint} הוא מפרק קשיח: הוא מחזיק את החלקים שלו במקומם, ולכן אין מה להניע. כדי שהחלקים יזוזו, שנו את הסוג שלו ב״עריכת מפרק״: Revolute לסיבוב, Slider להחלקה, Cylindrical לשניהם."
+  },
   "ja": {
     "drive.rigid": "{joint} は剛体ジョイントです。部品をその場に固定するため、駆動するものがありません。動かすには「ジョイントを編集」で種類を変更してください: 回転させるなら Revolute、スライドさせるなら Slider、両方なら Cylindrical。"
+  },
+  "vi": {
+    "drive.rigid": "{joint} là khớp nối cứng: nó giữ cố định các chi tiết, nên không có gì để dẫn động. Để các chi tiết chuyển động, hãy đổi loại khớp nối trong “Chỉnh sửa khớp nối”: Revolute để xoay, Slider để trượt, Cylindrical cho cả hai."
   },
   "zh": {
     "drive.rigid": "{joint} 是刚性接头：它把零件固定在原位，因此没有可驱动的运动。要让零件运动，请在“编辑接头”中更改其类型：旋转用 Revolute，滑动用 Slider，两者兼有用 Cylindrical。"
