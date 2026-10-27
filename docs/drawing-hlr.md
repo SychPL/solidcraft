@@ -31,7 +31,8 @@ hidden_lines(&[Prepared], &[Placement], &View, &Options, &cancel) -> Result<Draw
   `(p . x, p . y)` in millimetres, with `x = direction x up` normalised and `y = x x
   direction`.
 - `cancel` is polled during the work; when it returns true the call ends with
-  `HlrError::Cancelled`.
+  `HlrError::Cancelled`. `prepare_cancellable(&Brep, &Options, &cancel)` is `prepare` with
+  such a callback, polled between edges, faces and surface comparisons.
 
 The `Drawing` holds one `Line` per drawable edge and per silhouette curve of each
 placement, in order of placement. A line names its `placement` and `source` (`Edge { edge, tangent }`
@@ -110,7 +111,13 @@ in the W05a findings.
 ## Limits
 
 - `Options::max_tracks` (curves) and `Options::max_rays` bound the work, as do internal
-  caps on crossing candidates; exceeding one returns `HlrError::Budget`.
+  caps: crossing grid entries (50 million), crossing candidate pairs (500 million, counted
+  before the search, so no set of pairs met grows with them), crossings (50 million) and
+  the surface comparisons that group a body's faces (50 million). Exceeding one returns
+  `HlrError::Budget`.
+- `Options::trim_samples` is 1 to `MAX_TRIM_SAMPLES` (4096), and every coordinate of a
+  placed body at most `MAX_COORDINATE` (1e12 mm, the bound `geom::section` and
+  `geom::brep` put on stored numbers); otherwise the call returns `HlrError::Invalid`.
 - `Options::tangent_edges` (default on) draws edges between tangent faces, flagged
   `tangent: true`; drafting policy for them is W17.
 - Tolerances are relative to the faces and the scene. They are meant for faces up to

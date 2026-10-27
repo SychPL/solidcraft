@@ -2017,3 +2017,69 @@ fn a_plane_record_off_its_edges_by_rounding_still_hides() {
         assert_eq!(hidden_box_edges(&b), vec![0, 4, 8], "size {size}, offset {off}");
     }
 }
+
+/// A plate of `n` by `n` holes of radius `r` at `pitch`, `h` thick: the faces of `cuboid`, a
+/// circle per hole in the top and bottom faces, and a cylinder face (seam at angle 0) per hole.
+fn holed_plate(n: usize, pitch: f64, r: f64, h: f64) -> Brep {
+    let tau = std::f64::consts::TAU;
+    let size = n as f64 * pitch;
+    let mut b = cuboid([0.; 3], [size, size, h]);
+    let shell = &mut b.shells[0];
+    for i in 0..n {
+        for j in 0..n {
+            let (cx, cy) = ((i as f64 + 0.5) * pitch, (j as f64 + 0.5) * pitch);
+            let v = shell.vertices.len() as u32;
+            shell.vertices.push([cx + r, cy, 0.]);
+            shell.vertices.push([cx + r, cy, h]);
+            let e = shell.edges.len() as u32;
+            shell.edges.push(circle([cx, cy, 0.], r, v));
+            shell.edges.push(circle([cx, cy, h], r, v + 1));
+            shell.edges.push(Edge { vertices: [v, v + 1], curve: Curve::Line { start: [cx + r, cy, 0.], end: [cx + r, cy, h] } });
+            // Holes run clockwise seen from outside: the bottom face looks down, the top up.
+            shell.faces[0].loops.push(vec![uses(e, true)]);
+            shell.faces[1].loops.push(vec![uses(e + 1, false)]);
+            shell.faces.push(Face {
+                loops: vec![vec![uses(e, true), uses(e + 2, true), uses(e + 1, false), uses(e + 2, false)]],
+                surface: Surface::Cylinder { frame: frame_at([cx, cy, 0.]), radius: r, angle: [0., tau], height: [0., h] },
+                forward: false,
+            });
+        }
+    }
+    b
+}
+
+#[test]
+fn trim_samples_and_scene_extents_beyond_their_limits_are_refused() {
+    for trim_samples in [0, MAX_TRIM_SAMPLES + 1] {
+        assert!(matches!(prepare(&cuboid([0.; 3], [1.; 3]), &Options { trim_samples, ..Options::default() }), Err(HlrError::Invalid(_))));
+    }
+    // Placements far apart once made the scene's size infinite and every piece visible.
+    let def = prepare(&cuboid([0.; 3], [1.; 3]), &Options::default()).unwrap();
+    let view = View::new(Vec3::new(-1., -1., -1.), Vec3::new(0., 0., 1.)).unwrap();
+    let defs = [def];
+    for far in [1e200, 2e12, -2e12] {
+        let scene = [identity(0, [0.; 3]), identity(0, [far, 0., 0.])];
+        assert!(matches!(hidden_lines(&defs, &scene, &view, &Options::default(), &never), Err(HlrError::Invalid("scene extent"))), "{far}");
+    }
+    let scene = [identity(0, [0.; 3]), identity(0, [1e11, 0., 0.])];
+    assert!(hidden_lines(&defs, &scene, &view, &Options::default(), &never).is_ok());
+}
+
+#[test]
+fn surface_groups_match_comparing_every_pair_and_preparing_can_be_cancelled() {
+    // Many holes of one radius, one a hair larger, a torus and a sphere in halves.
+    let mut b = holed_plate(4, 10., 3., 2.);
+    let wider = holed_plate(1, 10., 3. * (1. + 5e-10), 2.);
+    for s in [wider.shells[0].clone(), torus(5., 1.5).shells[0].clone(), sphere(4.).shells[0].clone()] {
+        b.shells.push(s);
+    }
+    let def = prepare(&b, &Options::default()).unwrap();
+    for (i, f) in def.faces.iter().enumerate() {
+        let every: Vec<usize> =
+            def.faces.iter().enumerate().filter(|(j, g)| *j == i || same_analytic(&f.analytic, &g.analytic, 1e-9)).map(|(j, _)| j).collect();
+        assert_eq!(f.group, every, "face {i}");
+    }
+    // The wider hole joins the first hole (same axis); the torus and sphere halves pair up.
+    assert_eq!(def.faces.iter().filter(|f| f.group.len() == 2).count(), 6);
+    assert!(matches!(prepare_cancellable(&b, &Options::default(), &|| true), Err(HlrError::Cancelled)));
+}

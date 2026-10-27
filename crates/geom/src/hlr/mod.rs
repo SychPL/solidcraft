@@ -182,6 +182,15 @@ fn analytic_name(a: &Analytic) -> &'static str {
 }
 
 pub fn prepare(b: &Brep, opts: &Options) -> Result<Prepared, HlrError> {
+    prepare_cancellable(b, opts, &|| false)
+}
+
+/// [`prepare`], polling `cancel` between edges, faces and surface comparisons; when it returns
+/// true the call ends with `HlrError::Cancelled`.
+pub fn prepare_cancellable(b: &Brep, opts: &Options, cancel: &dyn Fn() -> bool) -> Result<Prepared, HlrError> {
+    if !(1..=MAX_TRIM_SAMPLES).contains(&opts.trim_samples) {
+        return Err(HlrError::Invalid("trim samples"));
+    }
     b.validate().map_err(|_| HlrError::Invalid("portable B-rep"))?;
     // Work on the body moved to its own centre: rounding in ray and inversion formulas grows
     // with the coordinates, and a part may be modelled far from the origin (W05a finding 7).
@@ -194,7 +203,10 @@ pub fn prepare(b: &Brep, opts: &Options) -> Result<Prepared, HlrError> {
     for shell in &b.shells {
         let base_face = faces.len();
         let mut curves = Vec::with_capacity(shell.edges.len());
-        for e in &shell.edges {
+        for (ei, e) in shell.edges.iter().enumerate() {
+            if ei % 256 == 0 && cancel() {
+                return Err(HlrError::Cancelled);
+            }
             let (c, acc) = C3::new(&e.curve)?;
             let record = match &e.curve {
                 crate::brep::Curve::Line { .. } => "line",
@@ -219,6 +231,9 @@ pub fn prepare(b: &Brep, opts: &Options) -> Result<Prepared, HlrError> {
         let local_curves: Vec<C3> = curves.iter().map(|(c, _)| c.clone()).collect();
         let mut users: Vec<Vec<usize>> = vec![Vec::new(); shell.edges.len()];
         for (fi, f) in shell.faces.iter().enumerate() {
+            if cancel() {
+                return Err(HlrError::Cancelled);
+            }
             let mut surface = S3::new(&f.surface)?;
             // A flat spline patch is a plane: trimmed and intersected as one.
             if let Some(plane) = surface.flat(1e-9) {
@@ -328,9 +343,45 @@ pub fn prepare(b: &Brep, opts: &Options) -> Result<Prepared, HlrError> {
             edges.push(EdgeData { curve: c, acc, faces: list, kind });
         }
     }
+    // Faces on one quadric or torus. Only surfaces of one kind whose size (radius, half angle,
+    // major radius) agrees to the tolerance can match, so each face is compared with the faces
+    // in its window of the sorted sizes, not with every face.
+    let size = |a: &Analytic| match a {
+        Analytic::Cylinder { r, .. } => Some((0u8, *r)),
+        Analytic::Cone { half, .. } => Some((1, *half)),
+        Analytic::Sphere { r, .. } => Some((2, *r)),
+        Analytic::Torus { major, .. } => Some((3, *major)),
+        Analytic::Plane | Analytic::Other => None,
+    };
     let analytics: Vec<Analytic> = faces.iter().map(|f| f.analytic).collect();
+    let mut sorted: Vec<(u8, f64, usize)> = analytics.iter().enumerate().filter_map(|(j, a)| size(a).map(|(k, v)| (k, v, j))).collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut compared = 0usize;
     for (i, f) in faces.iter_mut().enumerate() {
-        f.group = analytics.iter().enumerate().filter(|(j, b)| *j == i || same_analytic(&f.analytic, b, 1e-9)).map(|(j, _)| j).collect();
+        if i % 256 == 0 && cancel() {
+            return Err(HlrError::Cancelled);
+        }
+        let mut group = vec![i];
+        if let Some((kind, v)) = size(&f.analytic) {
+            // Wider than any match allows: same_analytic takes sizes within 1e-9 of the size
+            // (relative for lengths, absolute for the half angle).
+            let reach = 2e-9 * v.abs().max(1.);
+            let first = sorted.partition_point(|c| c.0 < kind || (c.0 == kind && c.1 < v - reach));
+            for (_, _, j) in sorted.get(first..).unwrap_or_default().iter().take_while(|c| c.0 == kind && c.1 <= v + reach) {
+                compared += 1;
+                if compared > 50_000_000 {
+                    return Err(HlrError::Budget("surface group"));
+                }
+                if compared.is_multiple_of(65536) && cancel() {
+                    return Err(HlrError::Cancelled);
+                }
+                if *j != i && analytics.get(*j).is_some_and(|b| same_analytic(&f.analytic, b, 1e-9)) {
+                    group.push(*j);
+                }
+            }
+        }
+        group.sort_unstable();
+        f.group = group;
     }
     report.faces = faces.len();
     report.edges = edges.len();
@@ -438,7 +489,7 @@ pub struct Options {
     /// Also handle freeform faces: contoured silhouettes and seeded ray tests, slow and
     /// ill-conditioned where a face is seen nearly edge-on (W05a finding 6). Off by default.
     pub freeform: bool,
-    /// Boundary samples per curve piece when trimming faces.
+    /// Boundary samples per curve piece when trimming faces, 1 to [`MAX_TRIM_SAMPLES`].
     pub trim_samples: usize,
     pub max_tracks: usize,
     pub max_rays: usize,
@@ -449,6 +500,13 @@ impl Default for Options {
         Options { tangent_edges: true, freeform: false, trim_samples: 256, max_tracks: 200_000, max_rays: 20_000_000 }
     }
 }
+
+/// Largest [`Options::trim_samples`].
+pub const MAX_TRIM_SAMPLES: usize = 4096;
+/// Largest coordinate of a placed body in the scene, in millimetres: the bound `geom::section`
+/// and `geom::brep` put on stored numbers. Beyond it the scene's size, and every tolerance
+/// taken from it, would lose its meaning or overflow.
+pub const MAX_COORDINATE: f64 = 1e12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1203,6 +1261,9 @@ fn scene_centre(defs: &[Prepared], scene: &[Placement]) -> Result<Vec3, HlrError
                 if k & 4 == 0 { def.lo.z } else { def.hi.z },
             );
             let w = p.apply(c + def.offset);
+            if !(w.x.abs() <= MAX_COORDINATE && w.y.abs() <= MAX_COORDINATE && w.z.abs() <= MAX_COORDINATE) {
+                return Err(HlrError::Invalid("scene extent"));
+            }
             lo = lo.min(w);
             hi = hi.max(w);
         }
@@ -1310,6 +1371,8 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
         a: [f64; 2],
         b: [f64; 2],
         sag: f64,
+        /// The grid cells it was put in: first and last column and row.
+        cells: [usize; 4],
     }
     let mut segs = Vec::new();
     let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
@@ -1320,7 +1383,7 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
                 lo = [lo[0].min(p[0]), lo[1].min(p[1])];
                 hi = [hi[0].max(p[0]), hi[1].max(p[1])];
             }
-            segs.push(Seg { track: ti, i, a: a.1, b: b.1, sag: t.sags.get(i).copied().unwrap_or(0.) });
+            segs.push(Seg { track: ti, i, a: a.1, b: b.1, sag: t.sags.get(i).copied().unwrap_or(0.), cells: [0; 4] });
         }
     }
     if segs.is_empty() {
@@ -1333,7 +1396,7 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
     };
     let mut grid: Vec<Vec<usize>> = vec![Vec::new(); n * n];
     let mut entries = 0usize;
-    for (si, s) in segs.iter().enumerate() {
+    for (si, s) in segs.iter_mut().enumerate() {
         if si % 65536 == 0 && (ctx.cancel)() {
             return Err(HlrError::Cancelled);
         }
@@ -1343,6 +1406,7 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
         if entries > 50_000_000 {
             return Err(HlrError::Budget("crossing grid"));
         }
+        s.cells = [a.0, a.1, b.0, b.1];
         for y in a.1..=b.1 {
             for x in a.0..=b.0 {
                 if let Some(c) = grid.get_mut(y * n + x) {
@@ -1351,10 +1415,15 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
             }
         }
     }
+    // A pair of segments is visited once per cell they share, so the number of visits is
+    // known before the search starts, and no set of pairs already met has to be kept.
+    let pairs = grid.iter().fold(0usize, |n, c| n.saturating_add(c.len().saturating_mul(c.len().saturating_sub(1)) / 2));
+    if pairs > 500_000_000 {
+        return Err(HlrError::Budget("crossing pair"));
+    }
     let tol = 1e-9 * ctx.scale;
     let mut found = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut pairs = 0usize;
+    let mut visits = 0usize;
     // Screen points of a segment's exact curve, `k` pieces (one for lines and polylines).
     let sub = |track: usize, i: usize, k: usize| -> Vec<[f64; 2]> {
         let Some(tr) = tracks.get(track) else { return Vec::new() };
@@ -1363,22 +1432,20 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
         let k = if matches!(tr.c3(), C3::Line { .. } | C3::Polyline(_)) { 1 } else { k };
         (0..=k).map(|j| ctx.view.screen(p.apply(tr.c3().at(a.0 + (b.0 - a.0) * j as f64 / k as f64)))).collect()
     };
-    for cellv in &grid {
+    for (c, cellv) in grid.iter().enumerate() {
+        let (x, y) = (c % n, c / n);
         for (k, &i) in cellv.iter().enumerate() {
             for &j in cellv.iter().skip(k + 1) {
-                pairs += 1;
-                if pairs.is_multiple_of(65536) && (ctx.cancel)() {
+                visits += 1;
+                if visits.is_multiple_of(65536) && (ctx.cancel)() {
                     return Err(HlrError::Cancelled);
                 }
-                if pairs > 500_000_000 {
-                    return Err(HlrError::Budget("crossing pair"));
-                }
                 let (Some(s), Some(t)) = (segs.get(i), segs.get(j)) else { continue };
-                if s.track == t.track && s.i.abs_diff(t.i) <= 1 {
+                // A pair sharing several cells is intersected in the first of them only.
+                if s.cells[0].max(t.cells[0]) != x || s.cells[1].max(t.cells[1]) != y {
                     continue;
                 }
-                let key = (i.min(j), i.max(j));
-                if !seen.insert(key) {
+                if s.track == t.track && s.i.abs_diff(t.i) <= 1 {
                     continue;
                 }
                 let straight = |k: usize| tracks.get(k).is_some_and(|tr| matches!(tr.c3(), C3::Line { .. }));
