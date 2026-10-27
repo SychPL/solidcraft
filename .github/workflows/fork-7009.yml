@@ -1,0 +1,38 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#7124 (#7009) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-7009
+on:
+  push:
+    branches: [fork-ci-7009]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+      - name: Agent chat, preferences and i18n tests (ui-egui)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- agent_chat prefs i18n toolbar documents 2>&1 | tail -n 80
