@@ -709,6 +709,10 @@ pub fn hidden_lines(defs: &[Prepared], scene: &[Placement], view: &View, opts: &
             return Err(HlrError::Cancelled);
         }
         let Some(def) = defs.get(p.body) else { continue };
+        // A body's records were rounded where it was modelled: a plane may stand an ulp of
+        // those coordinates off its edges, which matters for a part far smaller than its
+        // distance from the origin.
+        let far = 1e-14 * def.offset.x.abs().max(def.offset.y.abs()).max(def.offset.z.abs());
         for (ei, e) in def.edges.iter().enumerate() {
             if e.kind == EdgeKind::Seam || (e.kind == EdgeKind::Tangent && !opts.tangent_edges) {
                 continue;
@@ -726,7 +730,7 @@ pub fn hidden_lines(defs: &[Prepared], scene: &[Placement], view: &View, opts: &
                 // self-occlusion.
                 own_eps: {
                     let size = e.faces.iter().filter_map(|f| def.faces.get(*f)).map(|f| (f.hi - f.lo).len()).fold(0., f64::max);
-                    let base = (1e-9 * ctx.scale).max(1e-6 * size);
+                    let base = (1e-9 * ctx.scale).max(1e-6 * size).max(far);
                     match e.acc {
                         CurveAccuracy::Bounded { max_deviation_mm: tol } => base.max(10. * tol),
                         _ => base,
@@ -780,9 +784,9 @@ pub fn hidden_lines(defs: &[Prepared], scene: &[Placement], view: &View, opts: &
                         own: f.group.clone(),
                         own_eps: match s.acc {
                             CurveAccuracy::Sampled { max_sample_deviation_mm: dev } => {
-                                (1e-9 * ctx.scale).max(1e-6 * size).max(2. * (2. * size * dev).sqrt())
+                                (1e-9 * ctx.scale).max(1e-6 * size).max(far).max(2. * (2. * size * dev).sqrt())
                             }
-                            _ => (1e-9 * ctx.scale).max(1e-6 * size),
+                            _ => (1e-9 * ctx.scale).max(1e-6 * size).max(far),
                         },
                         samples: Vec::new(),
                         sags: Vec::new(),
