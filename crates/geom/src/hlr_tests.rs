@@ -2025,7 +2025,13 @@ fn zz_review_timings() {
         let t = std::time::Instant::now();
         let def = prepare(b, &o).unwrap();
         let p = t.elapsed();
-        let d = hidden_lines(&[def], scene, view, &o, &never).unwrap();
+        let d = match hidden_lines(&[def], scene, view, &o, &never) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("TIMING {name}: prepare {p:.2?}, refused after {:.2?}: {e:?}", t.elapsed() - p);
+                return;
+            }
+        };
         eprintln!(
             "TIMING {name}: prepare {p:.2?}, hidden_lines {:.2?}, tracks {}, pieces {}, crossings {}, rays {}, uncertain uncovered {}",
             t.elapsed() - p,
