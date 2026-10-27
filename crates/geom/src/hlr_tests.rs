@@ -2140,6 +2140,9 @@ fn coaxial_cylinders_seen_along_their_axis_draw_one_circle() {
     let view = View::new(Vec3::new(0., 0., -1.), Vec3::new(0., 1., 0.)).unwrap();
     let d = hidden_lines(&[def], &scene, &view, &Options::default(), &never).unwrap();
     assert_eq!(d.stats.uncertain_uncovered, 0, "{:?}", d.stats);
+    // The circles meet at every sample point they share; none of that is a crossing (only the
+    // seam's ends, where each curve stops, may count): 120 pairs once gave over 100 000.
+    assert!(d.stats.crossings <= 4 * 120, "{:?}", d.stats);
     for l in &d.lines {
         let top = l.placement == 7 && l.source == Source::Edge { edge: 1, tangent: false };
         let shown: f64 = l.pieces.iter().filter(|p| p.visibility == Visibility::Visible && !p.covered).map(|p| p.t[1] - p.t[0]).sum();

@@ -1376,8 +1376,11 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
         cells: [usize; 4],
     }
     let mut segs = Vec::new();
+    // Where each track's segments start in `segs`.
+    let mut first_seg = Vec::with_capacity(tracks.len());
     let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
     for (ti, t) in tracks.iter().enumerate() {
+        first_seg.push(segs.len());
         for (i, w) in t.samples.windows(2).enumerate() {
             let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
             for p in [a.1, b.1] {
@@ -1425,6 +1428,37 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
     let tol = 1e-9 * ctx.scale;
     let mut found = Vec::new();
     let mut visits = 0usize;
+    // Two chords that lie on each other end to end, to rounding.
+    let coincide = |s: &Seg, t: &Seg| {
+        [point_segment(s.a, t.a, t.b), point_segment(s.b, t.a, t.b), point_segment(t.a, s.a, s.b), point_segment(t.b, s.a, s.b)]
+            .iter()
+            .all(|d| *d <= tol)
+    };
+    // The segment of the same track on the other side of a segment's end `f` (0 or 1).
+    let across = |s: &Seg, f: f64| -> Option<&Seg> {
+        let i = if f == 1. { s.i + 1 } else { s.i.checked_sub(1)? };
+        segs.get(first_seg.get(s.track)? + i).filter(|n| n.track == s.track && n.i == i)
+    };
+    // Two curves that coincide meet at every sample point they share, chord ends touching. Such
+    // a meeting is no crossing when the curves also coincide on both sides of it; where a
+    // coincident run starts or ends, one side differs and the meeting is kept.
+    // The end (0 or 1) of a segment that fraction `f` along it lies at, to rounding.
+    let end_at = |s: &Seg, f: f64| {
+        let len = (s.b[0] - s.a[0]).hypot(s.b[1] - s.a[1]);
+        if f * len <= tol {
+            Some(0.)
+        } else if (1. - f) * len <= tol {
+            Some(1.)
+        } else {
+            None
+        }
+    };
+    let shared_point = |s: &Seg, t: &Seg, (u, v): (f64, f64)| {
+        end_at(s, u)
+            .zip(end_at(t, v))
+            .and_then(|(fu, fv)| across(s, fu).zip(across(t, fv)))
+            .is_some_and(|(s2, t2)| coincide(s, t2) && coincide(s2, t))
+    };
     // Screen points of a segment's exact curve, `k` pieces (one for lines and polylines).
     let sub = |track: usize, i: usize, k: usize| -> Vec<[f64; 2]> {
         let Some(tr) = tracks.get(track) else { return Vec::new() };
@@ -1459,11 +1493,7 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
                 // run starts or ends, which chords that only partly overlap find. Intersecting
                 // their fine pieces is wasted work. Chords merely within each other's sag are not
                 // skipped: the curves between them can still cross.
-                let coincident = s.track != t.track
-                    && s.sag + t.sag > 0.
-                    && [point_segment(s.a, t.a, t.b), point_segment(s.b, t.a, t.b), point_segment(t.a, s.a, s.b), point_segment(t.b, s.a, s.b)]
-                        .iter()
-                        .all(|d| *d <= tol);
+                let coincident = s.track != t.track && s.sag + t.sag > 0. && coincide(s, t);
                 if coincident {
                     continue;
                 }
@@ -1481,8 +1511,11 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
                         }
                     }
                 } else {
+                    let curved = s.track != t.track && s.sag + t.sag > 0.;
                     for (u, v) in hits {
-                        found.push((s.track, s.i, u, t.track, t.i, v));
+                        if !(curved && shared_point(s, t, (u, v))) {
+                            found.push((s.track, s.i, u, t.track, t.i, v));
+                        }
                     }
                 }
                 if found.len() > 50_000_000 {
