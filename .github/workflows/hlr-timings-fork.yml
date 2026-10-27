@@ -1,0 +1,16 @@
+# Fork only, never part of a pull request: times the scenes of the #2457 review on a
+# GitHub-hosted runner, in the dev profile the reviewer used.
+name: HLR timings (fork only)
+on:
+  push:
+    branches: ['ci/hlr-timings-*']
+jobs:
+  timings:
+    name: HLR timings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Timings (dev profile)
+        run: cargo test -p solidcraft-geom --lib zz_review_timings -- --ignored --nocapture
