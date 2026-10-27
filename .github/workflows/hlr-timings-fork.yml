@@ -14,3 +14,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Timings (dev profile)
         run: cargo test -p solidcraft-geom --lib zz_review_timings -- --ignored --nocapture
+      - name: Timings (release profile)
+        run: cargo test --release -p solidcraft-geom --lib zz_review_timings -- --ignored --nocapture
