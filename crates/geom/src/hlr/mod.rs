@@ -1451,7 +1451,20 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
                 let straight = |k: usize| tracks.get(k).is_some_and(|tr| matches!(tr.c3(), C3::Line { .. }));
                 let overlaps = straight(s.track) && straight(t.track);
                 let hits = seg_hits(s.a, s.b, t.a, t.b, tol, overlaps);
-                if hits.is_empty() && s.sag + t.sag > 0. && seg_gap(s.a, s.b, t.a, t.b) <= s.sag + t.sag + tol {
+                let reach = s.sag + t.sag + tol;
+                // Chords of two curves that lie on each other end to end (aligned holes seen along
+                // their axes) cross only within their tolerance, everywhere and nowhere in
+                // particular: visibility changes where such a run starts or ends, which chords
+                // that only partly overlap find. Intersecting their fine pieces is wasted work.
+                let coincident = s.track != t.track
+                    && s.sag + t.sag > 0.
+                    && [point_segment(s.a, t.a, t.b), point_segment(s.b, t.a, t.b), point_segment(t.a, s.a, s.b), point_segment(t.b, s.a, s.b)]
+                        .iter()
+                        .all(|d| *d <= reach);
+                if coincident {
+                    continue;
+                }
+                if hits.is_empty() && s.sag + t.sag > 0. && seg_gap(s.a, s.b, t.a, t.b) <= reach {
                     // The chords miss but the curves may not: two crossings close together can
                     // lie within one chord's sag. Intersect finer pieces of the exact curves.
                     let (ps, pt) = (sub(s.track, s.i, 16), sub(t.track, t.i, 16));
@@ -1788,15 +1801,15 @@ fn classify_point(ctx: &Ctx, placement: usize, own: &[usize], own_eps: f64, worl
             f.surface.ray_as(&f.analytic, p0, dl, range, &mut hits);
             for h in &hits {
                 let p = f.surface.point(h.uv);
-                let margin = f.trim.margin(p);
                 let tol = 2. * f.trim.chord_error + 1e-7 * (f.hi - f.lo).len();
+                let on_boundary = f.trim.near(p, tol);
                 let inside = f.trim.contains(h.uv);
                 match inside {
                     None => uncertain = true,
                     Some(inside) => {
                         // An unsupported freeform face never hides anything for certain.
                         let unsure = f.freeform && !ctx.freeform;
-                        if margin <= tol || (inside && (unsure || h.grazing || (!is_own && h.lam < ctx.eps_own))) {
+                        if on_boundary || (inside && (unsure || h.grazing || (!is_own && h.lam < ctx.eps_own))) {
                             uncertain = true;
                         } else if inside {
                             return Visibility::Hidden;

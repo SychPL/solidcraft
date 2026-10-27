@@ -174,6 +174,11 @@ and intervals:
   there;
 - two strips of a torus 0.0003 rad wide keep their 0.006 mm of outline;
 - two touching boxes draw each shared edge once;
+- a box whose top plane record stands one rounding (or 1e-11 of 100 mm) off its edges still
+  hides its back edges; a plate's sixteen holes each hide the same part of their bottom
+  circle; eight coaxial cylinders seen along their axis show one circle; 300 boxes apart on
+  screen are each drawn as the first one; the trim's chord grid agrees with a scan of every
+  chord; surface groups agree with comparing every pair of faces;
 - mirrored placements, bad body indices and bad views are refused; cancellation and
   budgets return errors;
 - a box stored with planes through three points draws the same bits as one with

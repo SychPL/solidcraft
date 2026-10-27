@@ -2083,3 +2083,84 @@ fn surface_groups_match_comparing_every_pair_and_preparing_can_be_cancelled() {
     assert_eq!(def.faces.iter().filter(|f| f.group.len() == 2).count(), 6);
     assert!(matches!(prepare_cancellable(&b, &Options::default(), &|| true), Err(HlrError::Cancelled)));
 }
+
+#[test]
+fn the_chord_grid_finds_what_a_scan_of_every_chord_finds() {
+    // The plate's top face: 16 circles and a square, thousands of chords.
+    let def = prepare(&holed_plate(4, 10., 3., 2.), &Options::default()).unwrap();
+    let trim = &def.faces[1].trim;
+    assert!(trim.chords.len() > 1000);
+    let (lo, hi) = (trim.lo, trim.hi);
+    let mut checked = [0usize; 2];
+    for i in 0..=60 {
+        for j in 0..=60 {
+            let p = Vec3::new(lo.x + (hi.x - lo.x) * i as f64 / 60., lo.y + (hi.y - lo.y) * j as f64 / 60., lo.z + 1e-9 * (i % 3) as f64);
+            for tol in [1e-12, 1e-6, 0.01, 0.3, 2., 50.] {
+                let scan = trim.chords.iter().any(|(a, b)| p.dist_to_segment(*a, *b) <= tol);
+                assert_eq!(trim.near(p, tol), scan, "point {p:?}, tol {tol}");
+                checked[usize::from(scan)] += 1;
+            }
+        }
+    }
+    assert!(checked[0] > 1000 && checked[1] > 1000, "{checked:?}");
+}
+
+#[test]
+fn every_hole_of_a_plate_hides_the_same_part_of_its_bottom_circle() {
+    let def = prepare(&holed_plate(4, 10., 3., 2.), &Options::default()).unwrap();
+    let view = View::new(Vec3::new(-1., -0.8, -0.6), Vec3::new(0., 0., 1.)).unwrap();
+    let d = hidden_lines(&[def], &[identity(0, [0.; 3])], &view, &Options::default(), &never).unwrap();
+    let hidden =
+        |e: usize| -> f64 { edge_line(&d, 0, e).pieces.iter().filter(|p| p.visibility == Visibility::Hidden).map(|p| p.t[1] - p.t[0]).sum() };
+    // Edges 12, 15, 18, ...: each hole's bottom circle (12 box edges first).
+    let first = hidden(12);
+    assert!(first > 0.1 && first < std::f64::consts::TAU - 0.1, "part of a bottom circle is hidden by the wall: {first}");
+    for k in 1..16 {
+        let e = 12 + 3 * k;
+        assert!((hidden(e) - first).abs() < 1e-6, "hole {k}: {} against {first}", hidden(e));
+        let top = edge_line(&d, 0, e + 1);
+        assert!(top.pieces.iter().all(|p| p.visibility == Visibility::Visible), "hole {k}'s top circle is in front: {:?}", top.pieces);
+    }
+}
+
+#[test]
+fn coaxial_cylinders_seen_along_their_axis_draw_one_circle() {
+    // Eight cylinders stacked along Z, seen from above: all sixteen circles fall on one; only
+    // the top one shows, the others are hidden or lie under it.
+    let def = prepare(&cylinder(4., 10.), &Options::default()).unwrap();
+    let scene: Vec<Placement> = (0..8).map(|k| identity(0, [0., 0., 15. * k as f64])).collect();
+    let view = View::new(Vec3::new(0., 0., -1.), Vec3::new(0., 1., 0.)).unwrap();
+    let d = hidden_lines(&[def], &scene, &view, &Options::default(), &never).unwrap();
+    assert_eq!(d.stats.uncertain_uncovered, 0, "{:?}", d.stats);
+    for l in &d.lines {
+        let top = l.placement == 7 && l.source == Source::Edge { edge: 1, tangent: false };
+        let shown: f64 = l.pieces.iter().filter(|p| p.visibility == Visibility::Visible && !p.covered).map(|p| p.t[1] - p.t[0]).sum();
+        if top {
+            assert!((shown - std::f64::consts::TAU).abs() < 1e-9, "the top circle shows whole: {:?}", l.pieces);
+        } else {
+            assert_eq!(shown, 0., "placement {} {:?}: {:?}", l.placement, l.source, l.pieces);
+        }
+    }
+}
+
+#[test]
+fn a_few_hundred_placements_draw_as_one() {
+    // 300 boxes apart on screen: each is drawn exactly as the first one is.
+    let def = prepare(&cuboid([0.; 3], [1.; 3]), &Options::default()).unwrap();
+    let scene: Vec<Placement> = (0..300).map(|k| identity(0, [4. * (k % 20) as f64, 4. * (k / 20) as f64, 0.])).collect();
+    let view = View::new(Vec3::new(0.3, 0.2, -1.), Vec3::new(0., 1., 0.)).unwrap();
+    let d = hidden_lines(&[def], &scene, &view, &Options::default(), &never).unwrap();
+    assert_eq!(d.lines.len(), 300 * 12);
+    let first: Vec<&Line> = d.lines.iter().filter(|l| l.placement == 0).collect();
+    assert!(first.iter().any(|l| l.pieces.iter().any(|p| p.visibility == Visibility::Hidden)), "a box hides some of its own edges");
+    for (k, chunk) in d.lines.chunks(12).enumerate() {
+        for (l, f) in chunk.iter().zip(&first) {
+            assert_eq!((l.placement, l.source), (k, f.source));
+            assert_eq!(l.pieces.len(), f.pieces.len(), "placement {k} {:?}", l.source);
+            for (p, q) in l.pieces.iter().zip(&f.pieces) {
+                assert_eq!((p.visibility, p.covered), (q.visibility, q.covered), "placement {k} {:?}", l.source);
+                assert!((p.t[0] - q.t[0]).abs() < 1e-9 && (p.t[1] - q.t[1]).abs() < 1e-9, "placement {k} {:?}", l.source);
+            }
+        }
+    }
+}

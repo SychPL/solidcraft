@@ -25,6 +25,92 @@ pub(crate) struct Trim {
     pub unsupported: Option<&'static str>,
     /// Index for the two-leg parity path q -> (r.u, q.v) -> r.
     index: Option<Index>,
+    /// `chords` on a grid, for boundaries with many of them.
+    grid: Option<ChordGrid>,
+}
+
+/// Boundary chords bucketed on a uniform grid over the boundary's box, so a point is checked
+/// against the chords around it, not all of them (a circle alone has `trim_samples` per break).
+/// Cells are at least as long as the longest chord, so a chord lies in at most two per axis.
+#[derive(Clone, Debug)]
+struct ChordGrid {
+    lo: Vec3,
+    cell: f64,
+    n: [usize; 3],
+    /// (cell, chord) pairs sorted by cell.
+    entries: Vec<(u32, u32)>,
+}
+
+impl ChordGrid {
+    fn new(chords: &[(Vec3, Vec3)], lo: Vec3, hi: Vec3) -> Option<ChordGrid> {
+        // A few chords are checked faster one by one than through a grid.
+        if chords.len() < 64 || u32::try_from(chords.len()).is_err() {
+            return None;
+        }
+        let ext = hi - lo;
+        let longest = chords.iter().map(|(a, b)| a.dist(*b)).fold(0., f64::max);
+        let cell = longest.max(ext.len() / 256.).max(ext.x.max(ext.y).max(ext.z) / 512.);
+        if !(cell > 0. && cell.is_finite()) {
+            return None;
+        }
+        let n = [ext.x, ext.y, ext.z].map(|e| ((e / cell).floor() as usize).saturating_add(1).min(513));
+        let mut grid = ChordGrid { lo, cell, n, entries: Vec::with_capacity(chords.len() * 2) };
+        for (i, (a, b)) in (0u32..).zip(chords) {
+            let (c0, c1) = (grid.cell_of(a.min(*b)), grid.cell_of(a.max(*b)));
+            for x in c0[0]..=c1[0] {
+                for y in c0[1]..=c1[1] {
+                    for z in c0[2]..=c1[2] {
+                        grid.entries.push((grid.key([x, y, z]), i));
+                    }
+                }
+            }
+        }
+        grid.entries.sort_unstable();
+        Some(grid)
+    }
+
+    fn cell_of(&self, p: Vec3) -> [usize; 3] {
+        let at = |v: f64, l: f64, n: usize| (((v - l) / self.cell).floor().max(0.) as usize).min(n.saturating_sub(1));
+        [at(p.x, self.lo.x, self.n[0]), at(p.y, self.lo.y, self.n[1]), at(p.z, self.lo.z, self.n[2])]
+    }
+
+    fn key(&self, c: [usize; 3]) -> u32 {
+        // At most 513 cells per axis: the key fits in 28 bits.
+        ((c[0] * self.n[1] + c[1]) * self.n[2] + c[2]) as u32
+    }
+
+    /// Whether a chord touching a cell of the box `p` +- `tol` is within `tol` of `p`; `None`
+    /// when that box covers too many cells to be worth it.
+    fn near(&self, chords: &[(Vec3, Vec3)], p: Vec3, tol: f64) -> Option<bool> {
+        // A little wider than `tol`, so rounding in the distance cannot pick a chord whose
+        // nearest point lies in a cell left out.
+        let w = tol * (1. + 1e-6);
+        let t = Vec3::new(w, w, w);
+        let (c0, c1) = (self.cell_of(p - t), self.cell_of(p + t));
+        let span = |k: usize| c1[k].saturating_sub(c0[k]).saturating_add(1);
+        if span(0).saturating_mul(span(1)).saturating_mul(span(2)) > 64 {
+            return None;
+        }
+        for x in c0[0]..=c1[0] {
+            for y in c0[1]..=c1[1] {
+                for z in c0[2]..=c1[2] {
+                    let k = self.key([x, y, z]);
+                    let first = self.entries.partition_point(|e| e.0 < k);
+                    let close = self
+                        .entries
+                        .get(first..)
+                        .unwrap_or_default()
+                        .iter()
+                        .take_while(|e| e.0 == k)
+                        .any(|(_, i)| chords.get(*i as usize).is_some_and(|(a, b)| p.dist_to_segment(*a, *b) <= tol));
+                    if close {
+                        return Some(true);
+                    }
+                }
+            }
+        }
+        Some(false)
+    }
 }
 
 /// Segment copies shifted across periods near the inside point, the sorted crossings of the
@@ -222,7 +308,8 @@ pub(crate) fn build(face: &Face, edges: &[C3], surface: &S3, per_break: usize) -
         }
     }
     let index = inside.map(|r| index(&segs, period, r));
-    Trim { segs, period, inside, chords, chord_error, lo, hi, unsupported, index }
+    let grid = ChordGrid::new(&chords, lo, hi);
+    Trim { segs, period, inside, chords, chord_error, lo, hi, unsupported, index, grid }
 }
 
 fn shifts(period: [Option<f64>; 2]) -> Vec<(f64, f64)> {
@@ -280,14 +367,16 @@ impl Trim {
         Some(it.fold((first, first), |(lo, hi), p| ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])))
     }
 
-    /// Distance from a 3D point to the sampled boundary.
-    pub fn margin(&self, p: Vec3) -> f64 {
-        self.chords.iter().map(|(a, b)| p.dist_to_segment(*a, *b)).fold(f64::MAX, f64::min)
-    }
-
-    /// Whether a 3D point is within `tol` of the sampled boundary (the boundary's box first).
+    /// Whether a 3D point is within `tol` of the sampled boundary: the boundary's box first,
+    /// then the chords around the point (all of them for a short boundary or a wide `tol`).
     pub fn near(&self, p: Vec3, tol: f64) -> bool {
         let out = (self.lo - p).max(p - self.hi).max(Vec3::new(0., 0., 0.));
-        out.len() <= tol && self.chords.iter().any(|(a, b)| p.dist_to_segment(*a, *b) <= tol)
+        if !(out.len() <= tol) {
+            return false;
+        }
+        match self.grid.as_ref().and_then(|g| g.near(&self.chords, p, tol)) {
+            Some(close) => close,
+            None => self.chords.iter().any(|(a, b)| p.dist_to_segment(*a, *b) <= tol),
+        }
     }
 }
