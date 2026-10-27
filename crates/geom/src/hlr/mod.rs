@@ -1842,14 +1842,19 @@ fn classify_point(ctx: &Ctx, placement: usize, own: &[usize], own_eps: f64, worl
             for h in &hits {
                 let p = f.surface.point(h.uv);
                 let tol = 2. * f.trim.chord_error + 1e-7 * (f.hi - f.lo).len();
-                let on_boundary = f.trim.near(p, tol);
-                let inside = f.trim.contains(h.uv);
-                match inside {
+                // A hit on the boundary is uncertain on either side of it, so the parity test is
+                // left out there: its cost grows with the boundary around the hit, all of a
+                // circle when bodies in line along the view meet each other on their circles.
+                if f.trim.near(p, tol) {
+                    uncertain = true;
+                    continue;
+                }
+                match f.trim.contains(h.uv) {
                     None => uncertain = true,
                     Some(inside) => {
                         // An unsupported freeform face never hides anything for certain.
                         let unsure = f.freeform && !ctx.freeform;
-                        if on_boundary || (inside && (unsure || h.grazing || (!is_own && h.lam < ctx.eps_own))) {
+                        if inside && (unsure || h.grazing || (!is_own && h.lam < ctx.eps_own)) {
                             uncertain = true;
                         } else if inside {
                             return Visibility::Hidden;
