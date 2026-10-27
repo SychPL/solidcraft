@@ -8,6 +8,24 @@
     "ui.agent_chat_retry": "Retry",
     "ui.agent_chat_state_failed": "Connection failed"
   },
+  "ar": {
+    "ai.prefs.connect_at_start": "الاتصال بآخر وكيل مستخدم عند بدء SolidCraft",
+    "ai.prefs.connect_at_start_note": "يبدأ في الخلفية الوكيل الذي اتصلت به آخر مرة (أو الوكيل الافتراضي) في كل مرة يبدأ فيها SolidCraft، ليكون جاهزًا للمحادثة. لا يحدث ذلك عند بدء SolidCraft مع --control. إذا تعذّر الاتصال، يعرض المساعد «فشل الاتصال» وزر «إعادة المحاولة».",
+    "ai.prefs.open_at_start": "فتح لوحة المساعد عند بدء SolidCraft",
+    "ai.prefs.open_at_start_note": "يعرض لوحة المساعد (أو نافذتها المستقلة) في كل مرة يبدأ فيها SolidCraft. لا يحدث ذلك عند بدء SolidCraft مع --control.",
+    "ui.agent_chat_last_missing": "الوكيل المستخدم آخر مرة ({agent}) لم يعد متاحًا. اختر وكيلًا، ثم اضغط «إعادة المحاولة».",
+    "ui.agent_chat_retry": "إعادة المحاولة",
+    "ui.agent_chat_state_failed": "فشل الاتصال"
+  },
+  "he": {
+    "ai.prefs.connect_at_start": "התחברות לסוכן האחרון שבו השתמשת בהפעלת SolidCraft",
+    "ai.prefs.connect_at_start_note": "מפעיל ברקע את הסוכן שאליו התחברת לאחרונה (או את סוכן ברירת המחדל) בכל הפעלה של SolidCraft, כך שהוא מוכן לשיחה. לא כש-SolidCraft מופעל עם --control. אם ההתחברות נכשלת, העוזר מציג „ההתחברות נכשלה” ולחצן „ניסיון חוזר”.",
+    "ai.prefs.open_at_start": "פתיחת חלונית העוזר בהפעלת SolidCraft",
+    "ai.prefs.open_at_start_note": "מציג את חלונית העוזר (או את החלון הנפרד שלה) בכל הפעלה של SolidCraft. לא כש-SolidCraft מופעל עם --control.",
+    "ui.agent_chat_last_missing": "הסוכן שבו השתמשת לאחרונה ({agent}) כבר אינו זמין. בחר סוכן ולחץ על „ניסיון חוזר”.",
+    "ui.agent_chat_retry": "ניסיון חוזר",
+    "ui.agent_chat_state_failed": "ההתחברות נכשלה"
+  },
   "ja": {
     "ai.prefs.connect_at_start": "SolidCraft の起動時に前回使用したエージェントに接続",
     "ai.prefs.connect_at_start_note": "SolidCraft を起動するたびに、前回接続したエージェント (またはデフォルトのエージェント) をバックグラウンドで起動し、すぐにチャットできるようにします。--control を付けて起動した場合は行いません。接続できない場合、アシスタントに「接続に失敗しました」と「再試行」ボタンが表示されます。",
@@ -16,6 +34,15 @@
     "ui.agent_chat_last_missing": "前回使用したエージェント ({agent}) は利用できなくなりました。エージェントを選んでから「再試行」を押してください。",
     "ui.agent_chat_retry": "再試行",
     "ui.agent_chat_state_failed": "接続に失敗しました"
+  },
+  "vi": {
+    "ai.prefs.connect_at_start": "Kết nối tác tử dùng gần nhất khi SolidCraft khởi động",
+    "ai.prefs.connect_at_start_note": "Mỗi lần SolidCraft khởi động, chạy ngầm tác tử bạn kết nối gần nhất (hoặc tác tử mặc định) để sẵn sàng trò chuyện. Không áp dụng khi SolidCraft được khởi động với --control. Nếu không kết nối được, Trợ lý hiển thị “Kết nối thất bại” và nút “Thử lại”.",
+    "ai.prefs.open_at_start": "Mở bảng Trợ lý khi SolidCraft khởi động",
+    "ai.prefs.open_at_start_note": "Hiển thị bảng Trợ lý (hoặc cửa sổ riêng của nó) mỗi lần SolidCraft khởi động. Không áp dụng khi SolidCraft được khởi động với --control.",
+    "ui.agent_chat_last_missing": "Tác tử dùng gần nhất ({agent}) không còn khả dụng. Hãy chọn một tác tử rồi nhấn “Thử lại”.",
+    "ui.agent_chat_retry": "Thử lại",
+    "ui.agent_chat_state_failed": "Kết nối thất bại"
   },
   "zh": {
     "ai.prefs.connect_at_start": "SolidCraft 启动时连接上次使用的智能体",
