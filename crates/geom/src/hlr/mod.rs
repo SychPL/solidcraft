@@ -1446,8 +1446,22 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
     // Two curves that coincide meet at every sample point they share, chord ends touching. Such
     // a meeting is no crossing when the curves also coincide on both sides of it; where a
     // coincident run starts or ends, one side differs and the meeting is kept.
+    // The end (0 or 1) of a segment that fraction `f` along it lies at, to rounding.
+    let end_at = |s: &Seg, f: f64| {
+        let len = (s.b[0] - s.a[0]).hypot(s.b[1] - s.a[1]);
+        if f * len <= tol {
+            Some(0.)
+        } else if (1. - f) * len <= tol {
+            Some(1.)
+        } else {
+            None
+        }
+    };
     let shared_point = |s: &Seg, t: &Seg, (u, v): (f64, f64)| {
-        (u == 0. || u == 1.) && (v == 0. || v == 1.) && across(s, u).zip(across(t, v)).is_some_and(|(s2, t2)| coincide(s, t2) && coincide(s2, t))
+        end_at(s, u)
+            .zip(end_at(t, v))
+            .and_then(|(fu, fv)| across(s, fu).zip(across(t, fv)))
+            .is_some_and(|(s2, t2)| coincide(s, t2) && coincide(s2, t))
     };
     // Screen points of a segment's exact curve, `k` pieces (one for lines and polylines).
     let sub = |track: usize, i: usize, k: usize| -> Vec<[f64; 2]> {
