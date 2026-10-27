@@ -2223,13 +2223,14 @@ fn zz_review_timings() {
         let p = t.elapsed();
         let d = hidden_lines(&[def], scene, view, &o, &never).unwrap();
         eprintln!(
-            "TIMING {name}: prepare {p:.2?}, hidden_lines {:.2?} (phases ms {:?}), tracks {}, pieces {}, crossings {}, rays {}, uncertain uncovered {}",
+            "TIMING {name}: prepare {p:.2?}, hidden_lines {:.2?} (phases ms {:?}), tracks {}, pieces {}, crossings {}, rays {}, surface tests {}, uncertain uncovered {}",
             t.elapsed() - p,
             d.stats.phase_ms,
             d.stats.tracks,
             d.stats.pieces,
             d.stats.crossings,
             d.stats.rays,
+            d.stats.surface_ray_tests,
             d.stats.uncertain_uncovered
         );
     };
