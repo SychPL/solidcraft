@@ -2016,6 +2016,14 @@ fn a_plane_record_off_its_edges_by_rounding_still_hides() {
         assert_ne!(origin[2], size, "the offset must change the record");
         assert_eq!(hidden_box_edges(&b), vec![0, 4, 8], "size {size}, offset {off}");
     }
+    // A 0.001 mm cube modelled 1e7 mm out, its top plane one step (1.9e-9 mm) above its edges:
+    // more than 1e-6 of the face, so the padding must also grow with the coordinates.
+    let (c, size) = (1e7, 0.001);
+    let mut b = cuboid([c; 3], [c + size; 3]);
+    let Surface::Plane { origin, .. } = &mut b.shells[0].faces[1].surface else { panic!("the top face is a plane") };
+    origin[2] = f64::from_bits(origin[2].to_bits() + 1);
+    assert!(origin[2] - (c + size) > 1e-9);
+    assert_eq!(hidden_box_edges(&b), vec![0, 4, 8], "a tiny cube far out");
 }
 
 /// A plate of `n` by `n` holes of radius `r` at `pitch`, `h` thick: the faces of `cuboid`, a
@@ -2163,4 +2171,40 @@ fn a_few_hundred_placements_draw_as_one() {
             }
         }
     }
+}
+
+#[test]
+fn chords_only_near_each_other_still_meet_their_crossings() {
+    // An arc of radius 1000 sampled as one chord (sag about 5 mm) and a line 1 mm off that chord
+    // toward the arc's bulge: all four ends lie within the sag of the other chord, yet the arc
+    // crosses the line twice. The crossings must be found, not skipped as a coincidence.
+    let def = prepare(&cuboid([0.; 3], [1.; 3]), &Options::default()).unwrap();
+    let scene = [identity(0, [0.; 3])];
+    let view = View::new(Vec3::new(0., 0., -1.), Vec3::new(0., 1., 0.)).unwrap();
+    let defs = [def];
+    let ctx = context(&defs, &scene, &view, &Options::default(), &never).unwrap();
+    let arc = C3::Arc { o: Vec3::ZERO, x: Vec3::new(1., 0., 0.), y: Vec3::new(0., 1., 0.), r: [1000., 1000.], range: [0., 0.2] };
+    let (a, b) = (arc.at(0.), arc.at(0.2));
+    let sag = 1000. * (1. - 0.1f64.cos());
+    let out = Vec3::new(0.1f64.cos(), 0.1f64.sin(), 0.);
+    let line = C3::Line { a: a + out, b: b + out };
+    let track = |curve: &C3, range: [f64; 2], sag: f64| {
+        let screen = |t: f64| view.screen(curve.at(t));
+        Track {
+            placement: 0,
+            curve: TrackCurve::Owned(curve.clone()),
+            range,
+            source: Source::Edge { edge: 0, tangent: false },
+            acc: CurveAccuracy::Analytic,
+            own: Vec::new(),
+            own_eps: 1e-6,
+            samples: vec![(range[0], screen(range[0])), (range[1], screen(range[1]))],
+            sags: vec![sag],
+            splits: Vec::new(),
+        }
+    };
+    let mut tracks = vec![track(&arc, [0., 0.2], sag), track(&line, [0., 1.], 0.)];
+    assert!(sag > 4.9 && ((a + out).dist(a) - 1.).abs() < 1e-12);
+    assert_eq!(crossings(&mut tracks, &ctx).unwrap(), 2);
+    assert!(tracks.iter().all(|t| t.splits.len() == 2), "{:?}", tracks.iter().map(|t| &t.splits).collect::<Vec<_>>());
 }

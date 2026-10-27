@@ -292,8 +292,9 @@ pub fn prepare_cancellable(b: &Brep, opts: &Options, cancel: &dyn Fn() -> bool) 
                 hi = hi.max(bhi);
             }
             // Every face is padded, planes too: a plane record and its edges may disagree by
-            // rounding, and a box flat along the normal would cull the plane's own hit.
-            let pad = (hi - lo).len() * 1e-6;
+            // rounding, and a box flat along the normal would cull the plane's own hit. Rounding
+            // grows with where the body was modelled (its offset), not with the face's size.
+            let pad = (hi - lo).len() * 1e-6 + 1e-12 * offset.x.abs().max(offset.y.abs()).max(offset.z.abs());
             lo -= Vec3::new(pad, pad, pad);
             hi += Vec3::new(pad, pad, pad);
             for u in f.loops.iter().flatten() {
@@ -1452,15 +1453,17 @@ fn crossings(tracks: &mut [Track], ctx: &Ctx) -> Result<usize, HlrError> {
                 let overlaps = straight(s.track) && straight(t.track);
                 let hits = seg_hits(s.a, s.b, t.a, t.b, tol, overlaps);
                 let reach = s.sag + t.sag + tol;
-                // Chords of two curves that lie on each other end to end (aligned holes seen along
-                // their axes) cross only within their tolerance, everywhere and nowhere in
-                // particular: visibility changes where such a run starts or ends, which chords
-                // that only partly overlap find. Intersecting their fine pieces is wasted work.
+                // Chords of two curves that lie on each other end to end, to rounding (one curve
+                // projected again, aligned holes seen along their axes), cross only within that
+                // rounding, everywhere and nowhere in particular: visibility changes where such a
+                // run starts or ends, which chords that only partly overlap find. Intersecting
+                // their fine pieces is wasted work. Chords merely within each other's sag are not
+                // skipped: the curves between them can still cross.
                 let coincident = s.track != t.track
                     && s.sag + t.sag > 0.
                     && [point_segment(s.a, t.a, t.b), point_segment(s.b, t.a, t.b), point_segment(t.a, s.a, s.b), point_segment(t.b, s.a, s.b)]
                         .iter()
-                        .all(|d| *d <= reach);
+                        .all(|d| *d <= tol);
                 if coincident {
                     continue;
                 }
