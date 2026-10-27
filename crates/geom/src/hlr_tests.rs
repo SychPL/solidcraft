@@ -1985,3 +1985,67 @@ fn procedural_and_placed_records_are_not_supported_yet() {
     traced.shells[0].edges[0].curve = Curve::SurfaceIntersection { surfaces: [y0, z0], leader, tolerance: 1e-6 };
     assert!(matches!(prepare(&traced, &o), Err(HlrError::Unsupported("surface intersection curve"))));
 }
+
+/// A plate of `n` by `n` holes of radius `r` at `pitch`, `h` thick: the faces of `cuboid`, a
+/// circle per hole in the top and bottom faces, and a cylinder face (seam at angle 0) per hole.
+fn holed_plate(n: usize, pitch: f64, r: f64, h: f64) -> Brep {
+    let tau = std::f64::consts::TAU;
+    let size = n as f64 * pitch;
+    let mut b = cuboid([0.; 3], [size, size, h]);
+    let shell = &mut b.shells[0];
+    for i in 0..n {
+        for j in 0..n {
+            let (cx, cy) = ((i as f64 + 0.5) * pitch, (j as f64 + 0.5) * pitch);
+            let v = shell.vertices.len() as u32;
+            shell.vertices.push([cx + r, cy, 0.]);
+            shell.vertices.push([cx + r, cy, h]);
+            let e = shell.edges.len() as u32;
+            shell.edges.push(circle([cx, cy, 0.], r, v));
+            shell.edges.push(circle([cx, cy, h], r, v + 1));
+            shell.edges.push(Edge { vertices: [v, v + 1], curve: Curve::Line { start: [cx + r, cy, 0.], end: [cx + r, cy, h] } });
+            // Holes run clockwise seen from outside: the bottom face looks down, the top up.
+            shell.faces[0].loops.push(vec![uses(e, true)]);
+            shell.faces[1].loops.push(vec![uses(e + 1, false)]);
+            shell.faces.push(Face {
+                loops: vec![vec![uses(e, true), uses(e + 2, true), uses(e + 1, false), uses(e + 2, false)]],
+                surface: Surface::Cylinder { frame: frame_at([cx, cy, 0.]), radius: r, angle: [0., tau], height: [0., h] },
+                forward: false,
+            });
+        }
+    }
+    b
+}
+
+// Fork only, never in a pull request: the scenes of DevonHope's review of #2457, timed.
+#[test]
+#[ignore]
+fn zz_review_timings() {
+    let o = Options::default();
+    let time = |name: &str, b: &Brep, scene: &[Placement], view: &View| {
+        let t = std::time::Instant::now();
+        let def = prepare(b, &o).unwrap();
+        let p = t.elapsed();
+        let d = hidden_lines(&[def], scene, view, &o, &never).unwrap();
+        eprintln!(
+            "TIMING {name}: prepare {p:.2?}, hidden_lines {:.2?}, tracks {}, pieces {}, crossings {}, rays {}, uncertain uncovered {}",
+            t.elapsed() - p,
+            d.stats.tracks,
+            d.stats.pieces,
+            d.stats.crossings,
+            d.stats.rays,
+            d.stats.uncertain_uncovered
+        );
+    };
+    let iso = View::new(Vec3::new(-1., -0.8, -0.6), Vec3::new(0., 0., 1.)).unwrap();
+    time("plate with 16x16 holes, iso", &holed_plate(16, 10., 3., 5.), &[identity(0, [0.; 3])], &iso);
+    let cyl = cylinder(4., 10.);
+    // 64 cylinders one behind the other along the line of sight: every circle and outline of
+    // one falls on the others'.
+    let d = Vec3::new(-1., -0.3, -0.5);
+    let along: Vec<Placement> = (0..64).map(|k| identity(0, [-30. * k as f64 * d.x, -30. * k as f64 * d.y, -30. * k as f64 * d.z])).collect();
+    time("64 cylinders aligned along the view", &cyl, &along, &View::new(d, Vec3::new(0., 0., 1.)).unwrap());
+    let stacked: Vec<Placement> = (0..64).map(|k| identity(0, [0., 0., 15. * k as f64])).collect();
+    time("64 coaxial cylinders, top view", &cyl, &stacked, &View::new(Vec3::new(0., 0., -1.), Vec3::new(0., 1., 0.)).unwrap());
+    let boxes: Vec<Placement> = (0..300).map(|k| identity(0, [4. * (k % 20) as f64, 4. * (k / 20) as f64, 0.])).collect();
+    time("300 boxes", &cuboid([0.; 3], [1.; 3]), &boxes, &View::new(Vec3::new(0.3, 0.2, -1.), Vec3::new(0., 1., 0.)).unwrap());
+}
