@@ -268,17 +268,19 @@ pub fn prepare(b: &Brep, opts: &Options) -> Result<Prepared, HlrError> {
             }
             report.max_trim_chord = report.max_trim_chord.max(trim.chord_error);
             let (mut lo, mut hi) = (trim.lo, trim.hi);
-            if !matches!(surface, S3::Plane { .. }) {
-                // Curved faces can bulge past their boundary: bound them by the whole surface's
-                // guaranteed box (spline hull, turned profile), clipped to nothing tighter.
-                if let Some((blo, bhi)) = surface.bound() {
-                    lo = lo.min(blo);
-                    hi = hi.max(bhi);
-                }
-                let pad = (hi - lo).len() * 1e-6;
-                lo -= Vec3::new(pad, pad, pad);
-                hi += Vec3::new(pad, pad, pad);
+            // Curved faces can bulge past their boundary: bound them by the whole surface's
+            // guaranteed box (spline hull, turned profile), clipped to nothing tighter.
+            if !matches!(surface, S3::Plane { .. })
+                && let Some((blo, bhi)) = surface.bound()
+            {
+                lo = lo.min(blo);
+                hi = hi.max(bhi);
             }
+            // Every face is padded, planes too: a plane record and its edges may disagree by
+            // rounding, and a box flat along the normal would cull the plane's own hit.
+            let pad = (hi - lo).len() * 1e-6;
+            lo -= Vec3::new(pad, pad, pad);
+            hi += Vec3::new(pad, pad, pad);
             for u in f.loops.iter().flatten() {
                 if let Some(list) = users.get_mut(u.edge as usize) {
                     list.push(base_face + fi);

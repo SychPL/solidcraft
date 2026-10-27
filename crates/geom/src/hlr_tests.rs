@@ -1985,3 +1985,35 @@ fn procedural_and_placed_records_are_not_supported_yet() {
     traced.shells[0].edges[0].curve = Curve::SurfaceIntersection { surfaces: [y0, z0], leader, tolerance: 1e-6 };
     assert!(matches!(prepare(&traced, &o), Err(HlrError::Unsupported("surface intersection curve"))));
 }
+
+/// The edges whose every piece is hidden, in a box drawn from the isometric view.
+fn hidden_box_edges(b: &Brep) -> Vec<usize> {
+    let def = prepare(b, &Options::default()).unwrap();
+    let view = View::new(Vec3::new(-1., -1., -1.), Vec3::new(0., 0., 1.)).unwrap();
+    let d = hidden_lines(&[def], &[identity(0, [0.; 3])], &view, &Options::default(), &never).unwrap();
+    let mut hidden = Vec::new();
+    for l in &d.lines {
+        let Source::Edge { edge, .. } = l.source else { panic!("a box has no silhouettes") };
+        let states: Vec<_> = l.pieces.iter().map(|p| p.visibility).collect();
+        assert!(states.windows(2).all(|w| w[0] == w[1]), "edge {edge} is split: {states:?}");
+        if states[0] == Visibility::Hidden {
+            hidden.push(edge);
+        }
+    }
+    hidden.sort_unstable();
+    hidden
+}
+
+#[test]
+fn a_plane_record_off_its_edges_by_rounding_still_hides() {
+    // The top face's plane stands one rounding (a 1 mm cube) or 1e-11 (a 100 mm cube) above
+    // its edges. Its box must still let the rays from the back edges reach it.
+    for (size, off) in [(1., 2.2e-16), (100., 1e-11), (1., -2.2e-16)] {
+        let mut b = cuboid([0.; 3], [size; 3]);
+        let Surface::Plane { origin, .. } = &mut b.shells[0].faces[1].surface else { panic!("the top face is a plane") };
+        assert_eq!(origin[2], size);
+        origin[2] += off;
+        assert_ne!(origin[2], size, "the offset must change the record");
+        assert_eq!(hidden_box_edges(&b), vec![0, 4, 8], "size {size}, offset {off}");
+    }
+}
