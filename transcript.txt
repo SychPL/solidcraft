@@ -1,0 +1,16 @@
+shot /home/runner/work/solidcraft/solidcraft/shots/preferences-custom-instructions.png
+instructions after typing in Preferences: "Never call new_design from the chat; work in the open design.\nSketch on XZ with explicit plane vectors."
+shot /home/runner/work/solidcraft/solidcraft/shots/chat-first-session.png
+shot /home/runner/work/solidcraft/solidcraft/shots/chat-after-new-chat.png
+
+What the agent received in session/new:
+{
+ "standard field == _meta.systemPrompt.append": true,
+ "characters": 1078,
+ "ends with": "ges. Don't use shell or file tools: work through the SolidCraft tools. Keep answers short.\n\nThe user's custom instructions, set in SolidCraft's preferences:\nNever call new_design from the chat; work in the open design.\nSketch on XZ with explicit plane vectors."
+}
+{
+ "standard field == _meta.systemPrompt.append": true,
+ "characters": 1012,
+ "ends with": "oval in the chat, and each message allows a limited number of changes. Don't use shell or file tools: work through the SolidCraft tools. Keep answers short.\n\nThe user's custom instructions, set in SolidCraft's preferences:\nUse M3 screws unless I say otherwise."
+}
