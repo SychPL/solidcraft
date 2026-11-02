@@ -1,0 +1,12 @@
+(by hand) parameters.add {"name": "w", "expression": "40", "unit": "mm"}
+(by hand) solid.box {"length": "w", "width": 30, "height": 20, "corner": [0, 0, 0]}
+(by hand) parameters.change {"name": "w", "expression": "80"}
+shot /home/runner/work/solidcraft/solidcraft/shots/chat-after-hand-change-pr.png
+
+[pr] The prompts the agent received:
+---
+Chamfer the top edges, 2 mm.
+---
+[The user changed the design by hand since your last reply (parameters: w 40 -> 80). Read it again before you reuse positions, edge or face picks or sizes from earlier in this chat.]
+
+Chamfer the top edges, 2 mm.
