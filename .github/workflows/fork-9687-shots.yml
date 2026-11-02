@@ -1,0 +1,57 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#11146 (#9687) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-9687-shots
+on:
+  push:
+    branches: [fork-ci-9687-shots]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The pull request's base on main: the "before" screenshots build its engine.
+  BASE: 3c806394b06b2567d247ee779148ce4a62307225
+jobs:
+  screenshots:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [before, after]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+      - name: Main's engine (before)
+        if: matrix.build == 'before'
+        run: |
+          git fetch --depth=1 origin "$BASE"
+          git checkout FETCH_HEAD -- crates/engine
+          git status --short
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth x11-apps imagemagick libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: The report's design (Drucker.sc, attached to #9687)
+        run: |
+          mkdir -p "$RUNNER_TEMP/report"
+          curl -sSfL -o "$RUNNER_TEMP/report/Drucker.zip" https://github.com/user-attachments/files/34201199/Drucker.zip
+          python3 -I -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$RUNNER_TEMP/report/Drucker.zip" "$RUNNER_TEMP/report"
+          ls -la "$RUNNER_TEMP/report"
+      - name: Edit Joint's OK on a conflicting second planar joint, through the control channel
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/demo"
+          python3 -I .github/fork-9687/demo.py target/ci/solidcraft "$RUNNER_TEMP/demo" "$RUNNER_TEMP/report/Drucker.sc" 2>&1 | tee "$RUNNER_TEMP/demo/transcript.txt"
+      - if: always()
+        run: tail -c 12000 "$RUNNER_TEMP/demo/app.log" || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shots-${{ matrix.build }}
+          path: ${{ runner.temp }}/demo
