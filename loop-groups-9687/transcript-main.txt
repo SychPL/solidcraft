@@ -1,0 +1,166 @@
+> ui.resize {"width": 1600, "height": 1000}
+> ui.home {"open": false}
+Side made: []
+Top values: made [0.0, 0.0, 0.0] now [0.0, 0.0, 0.0]
+> ui.camera {"yaw": -0.6, "pitch": 0.55, "fit": true}
+boards opened: conflicts [{"joint": 9, "name": "Side", "why": "off by 0.0000 mm and 180.000\u00b0 from the placement the other joints give"}]
+shot boards-1-opened.png
+shot boards-2-edit-joint.png
+shot boards-3-after-ok.png
+boards after Edit Joint OK: conflicts [{"joint": 9, "name": "Side", "why": "off by 0.0000 mm and 180.000\u00b0 from the placement the other joints give"}]
+> ui.camera {"yaw": 0.7, "pitch": 0.5, "fit": true}
+Drucker opened: conflicts [{"joint": 130, "name": "Joint35", "why": "off by 27.9607 mm and 167.906\u00b0 from the placement the other joints give"}]
+shot drucker-1-opened.png
+Edit Joint OK on Joint35: [{"joint": 130, "name": "Joint35", "why": "off by 27.9607 mm and 167.906\u00b0 from the placement the other joints give"}]
+shot drucker-3-after-ok.png
+Drucker after Edit Joint OK on Joint35: conflicts [{"joint": 130, "name": "Joint35", "why": "off by 27.9607 mm and 167.906\u00b0 from the placement the other joints give"}]
+drive Joint34 x -237.175 -> -217.175: {"conflicts": [{"joint": 130, "name": "Joint35", "why": "off by 47.3307 mm and 167.906\u00b0 from the placement the other joints give"}], "stopped_by_loop": null, "held": null, "moved": true}
+drive Joint34 y 73.459 -> 93.459: {"conflicts": [{"joint": 130, "name": "Joint35", "why": "off by 28.6408 mm and 167.906\u00b0 from the placement the other joints give"}], "stopped_by_loop": null, "held": null, "moved": true}
+shot drucker-4-end.png
+{
+ "joints": [
+  {
+   "a": {
+    "component": 118,
+    "component_name": "MGNR12R400HM_FILE_1.stp",
+    "frame": {
+     "origin": [
+      4.665635915175958,
+      -224.99999999999983,
+      552.0519021321192
+     ],
+     "x": [
+      2.2157456166e-14,
+      -1.0,
+      -3.6524259911732847e-28
+     ],
+     "z": [
+      0.2946303459729306,
+      6.528258976068275e-15,
+      0.95561130133118
+     ]
+    },
+    "occurrence": 119,
+    "occurrence_name": "MGNR12R400HM_FILE_1.stp:1",
+    "path": "MGN12 F\u00fchrung:1/MGNR12R400HM_FILE_2.stp:1/MGNR12R400HM_FILE_1.stp:1",
+    "references": [
+     {
+      "feature": {
+       "id": 120,
+       "name": "MGN12 F\u00fchrung",
+       "type": "BaseFeature"
+      },
+      "name": "F120:face:1",
+      "role": "face",
+      "role_in_feature": "face:1"
+     }
+    ],
+    "resolves": true,
+    "snap": {
+     "face": "F120:face:1",
+     "pick": [
+      -0.8515952133930114,
+      152.1538772030836,
+      1.1368683772161603e-13
+     ],
+     "type": "face_center",
+     "x": [
+      0.0,
+      -1.0,
+      0.0
+     ]
+    }
+   },
+   "angle": 0.0,
+   "b": {
+    "component": 20,
+    "component_name": "Alu-Profil-450mm",
+    "frame": {
+     "origin": [
+      3.825000197687743,
+      -225.0,
+      580.0000000000022
+     ],
+     "x": [
+      1.0,
+      4.5236606843430024e-15,
+      -6.123233995736766e-17
+     ],
+     "z": [
+      -6.123233995736766e-17,
+      3.6575071629421736e-28,
+      -1.0
+     ]
+    },
+    "occurrence": 21,
+    "occurrence_name": "Alu-Profil-450mm:1",
+    "path": "Alu-Profil-450mm:1",
+    "references": [
+     {
+      "feature": {
+       "id": 22,
+       "name": "Alu-Profil-450mm",
+       "type": "BaseFeature"
+      },
+      "name": "F22:link:17cc7e8fa018b405",
+      "role": "face",
+      "role_in_feature": "link:17cc7e8fa018b405"
+     }
+    ],
+    "resolves": true,
+    "snap": {
+     "face": "F22:link:17cc7e8fa018b405",
+     "pick": [
+      228.4999999999999,
+      -229.4162438361732,
+      2.972678429526108
+     ],
+     "type": "face_center",
+     "x": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   },
+   "conflicts": [
+    "off by 27.9607 mm and 167.906\u00b0 from the placement the other joints give"
+   ],
+   "dofs": [
+    "x",
+    "y",
+    "angle"
+   ],
+   "errors": [],
+   "flip": true,
+   "id": 130,
+   "links": [],
+   "name": "Joint35",
+   "offset": 0.0,
+   "suppressed": false,
+   "type": "planar",
+   "values": [
+    {
+     "limits": null,
+     "name": "x",
+     "unit": "mm",
+     "value": 0.0
+    },
+    {
+     "limits": null,
+     "name": "y",
+     "unit": "mm",
+     "value": 0.0
+    },
+    {
+     "limits": null,
+     "name": "angle",
+     "unit": "deg",
+     "value": 0.0
+    }
+   ],
+   "visible": true
+  }
+ ]
+}
+> app.quit {"force": true}
