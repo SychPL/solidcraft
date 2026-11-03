@@ -59,16 +59,6 @@ fn on_stack(kib: usize) {
 }
 
 #[test]
-fn stack_1024_kib() {
-    on_stack(1024);
-}
-
-#[test]
-fn stack_2048_kib() {
-    on_stack(2048);
-}
-
-#[test]
-fn stack_8192_kib() {
-    on_stack(8192);
+fn stack() {
+    on_stack(std::env::var("FORK_11483_KIB").unwrap().parse().unwrap());
 }

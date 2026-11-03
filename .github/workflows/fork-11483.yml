@@ -10,63 +10,13 @@ permissions:
 env:
   CRASH_ZIP: https://github.com/user-attachments/files/34306774/20261103-065955-9984e0818631c021.zip
 jobs:
-  release-cli:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: windows-latest, ver: 0.30.0, asset: solidcraft-0.30.0-windows-x86-portable.zip }
-          - { os: windows-latest, ver: 0.30.0, asset: solidcraft-0.30.0-windows-x64-portable.zip }
-          - { os: windows-latest, ver: 0.40.0-rc.1, asset: solidcraft-0.40.0-rc.1-windows-x86-portable.zip }
-          - { os: windows-latest, ver: 0.40.0-rc.1, asset: solidcraft-0.40.0-rc.1-windows-x64-portable.zip }
-          - { os: ubuntu-24.04, ver: 0.30.0, asset: solidcraft-0.30.0-linux-x86_64.tar.gz }
-          - { os: ubuntu-24.04, ver: 0.40.0-rc.1, asset: solidcraft-0.40.0-rc.1-linux-x86_64.tar.gz }
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/fork-11483
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          architecture: x64
-      - run: python -m pip install psutil
-      - name: Download the release and the crash report
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download "v${{ matrix.ver }}" -R tangency-labs/solidcraft -p "${{ matrix.asset }}" -D "$RUNNER_TEMP/rel"
-          curl -sSfL --retry 5 -o "$RUNNER_TEMP/crash.zip" "$CRASH_ZIP"
-          python -I - "$RUNNER_TEMP" "${{ matrix.asset }}" <<'EOF'
-          import sys, tarfile, zipfile, pathlib
-          tmp, asset = pathlib.Path(sys.argv[1]), sys.argv[2]
-          a = tmp / "rel" / asset
-          (zipfile.ZipFile(a) if asset.endswith(".zip") else tarfile.open(a)).extractall(tmp / "app")
-          zipfile.ZipFile(tmp / "crash.zip").extractall(tmp / "crash")
-          cli = [p for p in (tmp / "app").rglob("*") if p.name in ("solidcraft-cli", "solidcraft-cli.exe")]
-          print("cli:", cli)
-          (tmp / "cli.txt").write_text(str(cli[0]))
-          EOF
-      - name: Replay the report (clearance and interference of the two parts)
-        run: |
-          crash=$(ls -d "$RUNNER_TEMP"/crash/*/)
-          python -I .github/fork-11483/repro.py "$(cat "$RUNNER_TEMP/cli.txt")" "$crash" out
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: repro-${{ matrix.ver }}-${{ matrix.asset }}
-          path: out/
   # The dialog's own work after Compute (a boolean and a mesh, called on the window thread,
-  # whose stack is 1 MiB on Windows), on threads with 1, 2 and 8 MiB stacks.
+  # whose stack is 1 MiB on Windows), on threads with 8 MiB down to 256 KiB stacks.
   dialog-stack:
     strategy:
       fail-fast: false
       matrix:
-        ref: [4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11, v0.30.0]
+        ref: [4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11, afd81380ab06b0e77e03fdf68185d4b484d0e84e]
         target: [x86_64-pc-windows-msvc, i686-pc-windows-msvc]
     runs-on: windows-latest
     timeout-minutes: 150
@@ -76,6 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          repository: tangency-labs/solidcraft
           ref: ${{ matrix.ref }}
       - uses: actions/checkout@v4
         with:
@@ -88,7 +39,7 @@ jobs:
         run: |
           f=crates/engine/tests/fork_11483.rs
           cp fork-ci/.github/fork-11483/fork_11483.rs "$f"
-          if [ "${{ matrix.ref }}" = v0.30.0 ]; then
+          if [ "${{ matrix.ref }}" = afd81380ab06b0e77e03fdf68185d4b484d0e84e ]; then
             sed -i 's|WORLD|s.world_state()|; s|MESH|o.tessellate((o.size() * 2e-3).max(1e-3))|' "$f"
           else
             sed -i 's|WORLD|s.world_state().unwrap()|; s|MESH|o.mesh(\&kernel::MeshTolerance::chord((o.size() * 2e-3).max(1e-3)))|' "$f"
@@ -103,9 +54,9 @@ jobs:
           set +e +o pipefail
           for reach in no yes; do
             if [ $reach = yes ]; then export FORK_11483_REACH=1; fi
-            for t in stack_8192_kib stack_2048_kib stack_1024_kib; do
-              echo "::group::reach=$reach $t"
-              cargo test --release -p solidcraft-engine --test fork_11483 --target ${{ matrix.target }} -- --exact $t --nocapture 2>&1 | grep -v "^\s*Compiling\|^\s*Finished\|^\s*Running" | tail -n 25
+            for kib in 8192 2048 1024 768 512 256; do
+              echo "::group::reach=$reach $kib KiB"
+              FORK_11483_KIB=$kib cargo test --release -p solidcraft-engine --test fork_11483 --target ${{ matrix.target }} -- --exact stack --nocapture 2>&1 | grep -v "^\s*Compiling\|^\s*Finished\|^\s*Running" | tail -n 25
               echo "exit ${PIPESTATUS[0]}"
               echo "::endgroup::"
             done
