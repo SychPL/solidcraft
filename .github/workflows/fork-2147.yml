@@ -18,10 +18,6 @@ jobs:
         include:
           - name: main
             ref: 4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11
-          - name: at-11000
-            ref: 3ca311f922f862f43c3eb29d40fd8ef211bf85cb
-          - name: before-11000
-            ref: b978eeddcddd02225be4c4090d7247e65edcd694
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -113,6 +109,27 @@ jobs:
             rm -f "$RUNNER_TEMP/work/out-$d.json"
           done
           done | tee "summary-${{ matrix.name }}.txt"
+      - name: The join (Extrude3) with and without each body it meets
+        run: |
+          mkdir -p "$RUNNER_TEMP/joins"
+          target/ci/solidcraft-cli script "$RUNNER_TEMP/design/design.sc" --out "$RUNNER_TEMP/joins/script.json"
+          python3 -I - "$RUNNER_TEMP/joins/script.json" "$RUNNER_TEMP/joins" <<'PY'
+          import json, sys
+          c = json.load(open(sys.argv[1], encoding="utf-8"))["commands"]
+          for name, idx in {"full": [0, 1, 2, 3], "no_tube": [0, 1, 3], "no_lug": [0, 2, 3]}.items():
+              json.dump({"commands": [c[i] for i in idx]}, open(f"{sys.argv[2]}/v-{name}.json", "w", encoding="utf-8"))
+          PY
+          for v in full no_tube no_lug; do
+            target/ci/solidcraft-cli eval "$RUNNER_TEMP/joins/v-$v.json" --json-out "$RUNNER_TEMP/joins/e-$v.json" > /dev/null 2>&1 || true
+            python3 -I - "$RUNNER_TEMP/joins/e-$v.json" "$v" <<'PY'
+          import json, sys
+          try:
+              v = json.load(open(sys.argv[1], encoding="utf-8"))
+          except Exception as e:
+              sys.exit(print(sys.argv[2], "no output:", e))
+          print(sys.argv[2], "bodies", v["body_count"], [(b["name"], round(b["volume_mm3"], 3), b["faces"]) for b in v["bodies"]], [t["error"] for t in v["timeline"] if t["error"]])
+          PY
+          done | tee "joins-${{ matrix.name }}.txt"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -120,3 +137,4 @@ jobs:
           path: |
             summary-${{ matrix.name }}.txt
             timeline-${{ matrix.name }}.txt
+            joins-${{ matrix.name }}.txt
