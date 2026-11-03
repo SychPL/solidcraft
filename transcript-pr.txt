@@ -1,0 +1,7 @@
+[pr] SolidCraft started with {"SNAP": "/snap/solidcraft/x1", "SNAP_NAME": "solidcraft", "SNAP_REVISION": "x1"}
+[pr] agents: []
+[pr] detection: found 0, missing ['claude', 'codex', 'antigravity', 'opencode', 'grok', 'copilot', 'qwen', 'goose']
+shot /home/runner/work/solidcraft/solidcraft/shots/pr-agent-chat.png
+[pr] Connect with no agent: ["No coding agent found. The Snap package is confined, so it cannot see or start the coding agents installed on this computer. To use them, install SolidCraft from the AppImage, .deb or .rpm package instead. An agent that uses an OpenAI-compatible API works in the Snap package too: set one up with Add agent."]
+shot /home/runner/work/solidcraft/solidcraft/shots/pr-agent-chat-connect.png
+shot /home/runner/work/solidcraft/solidcraft/shots/pr-preferences-assistant.png
