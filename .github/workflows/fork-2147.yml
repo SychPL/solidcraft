@@ -146,7 +146,26 @@ jobs:
           for t in dumps/*/*.txt; do echo "== $t"; cat "$t"; done
       - name: Replay the dumped union and write its inputs as ASCII
         run: |
-          mkdir -p ascii
+          mkdir -p ascii crates/smlib/examples
+          cat > crates/smlib/examples/replay2147.rs <<'RS'
+          //! Fork-only probe for #2147: reads a failing SmApiBoolean's dumped inputs, writes them as ASCII
+          //! `.smb`, and replays the union both ways.
+          use solidcraft_smlib::{BooleanOp, Brep};
+          use std::path::Path;
+
+          fn main() {
+              let args: Vec<String> = std::env::args().collect();
+              let (a, b, out) = (Path::new(&args[1]), Path::new(&args[2]), Path::new(&args[3]));
+              let ba = Brep::read(a, false).expect("read a");
+              let bb = Brep::read(b, false).expect("read b");
+              for (name, body) in [("a", &ba), ("b", &bb)] {
+                  println!("{name}: counts {:?} volume {:?}", body.counts(), body.volume(1e-8));
+                  body.write(&out.join(format!("{name}.ascii.smb")), true).expect("write ascii");
+              }
+              println!("a union b: {:?}", ba.boolean(&bb, BooleanOp::Union).map(|r| r.map(|r| (r.counts(), r.volume(1e-8)))));
+              println!("b union a: {:?}", bb.boolean(&ba, BooleanOp::Union).map(|r| r.map(|r| (r.counts(), r.volume(1e-8)))));
+          }
+          RS
           d=$(ls -d dumps/*/ | head -1)
           cargo run -p solidcraft-smlib --example replay2147 --profile ci --locked -- "$d"000000-SmApiBoolean-a.smb "$d"000000-SmApiBoolean-b.smb ascii | tee replay.txt || true
       - uses: actions/upload-artifact@v4
