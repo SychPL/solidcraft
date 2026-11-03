@@ -1,0 +1,5 @@
+overlapping pairs: 144
+shot out/pr-computing.png
+pr: longest wait for the window to answer while it checked: 0.30 s
+pr: Computing with Cancel shown: True; check done after: 8.8 s; app still running: True
+shot pr-result.png

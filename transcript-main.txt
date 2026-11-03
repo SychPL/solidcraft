@@ -1,0 +1,4 @@
+overlapping pairs: 144
+main: longest wait for the window to answer while it checked: 6.56 s
+main: Computing with Cancel shown: False; check done after: n/a (no Computing row); app still running: True
+shot main-result.png
