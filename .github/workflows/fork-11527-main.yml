@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.build == 'main' && '4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11' || '776889aaebcd1bfe8be7e823a8dbf5f9dba9e7e0' }}
+          ref: ${{ matrix.build == 'main' && '4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11' || '776889aae0b3ed979ecafbcf3d087deee6c1e31c' }}
       - name: Install a software Vulkan driver (lavapipe)
         run: |
           sudo apt-get update
