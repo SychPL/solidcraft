@@ -181,3 +181,57 @@ jobs:
             dumps/
             ascii/
             replay.txt
+  replay-on-solidcore-main:
+    needs: offset
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11
+      - uses: actions/checkout@v4
+        with:
+          repository: tangency-labs/solidcore
+          ref: 845bdb4e0
+          path: solidcore-main
+          sparse-checkout: crates
+      - uses: actions/download-artifact@v4
+        with:
+          name: offset-main
+          path: got
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Replay the dumped union on solidcore main
+        run: |
+          mv solidcore-main "$RUNNER_TEMP/solidcore-main"
+          mkdir -p .cargo ascii crates/smlib/examples
+          printf '[patch."https://github.com/tangency-labs/solidcore"]
+solidcore = { path = "%s/crates/solidcore" }
+' "$RUNNER_TEMP/solidcore-main" >> .cargo/config.toml
+          cat .cargo/config.toml
+          cat > crates/smlib/examples/replay2147.rs <<'RS'
+          //! Fork-only probe for #2147: reads a failing SmApiBoolean's dumped inputs, writes them as ASCII
+          //! `.smb`, and replays the union both ways.
+          use solidcraft_smlib::{BooleanOp, Brep};
+          use std::path::Path;
+
+          fn main() {
+              let args: Vec<String> = std::env::args().collect();
+              let (a, b, out) = (Path::new(&args[1]), Path::new(&args[2]), Path::new(&args[3]));
+              let ba = Brep::read(a, false).expect("read a");
+              let bb = Brep::read(b, false).expect("read b");
+              for (name, body) in [("a", &ba), ("b", &bb)] {
+                  println!("{name}: counts {:?} volume {:?}", body.counts(), body.volume(1e-8));
+                  body.write(&out.join(format!("{name}.ascii.smb")), true).expect("write ascii");
+              }
+              println!("a union b: {:?}", ba.boolean(&bb, BooleanOp::Union).map(|r| r.map(|r| (r.counts(), r.volume(1e-8)))));
+              println!("b union a: {:?}", bb.boolean(&ba, BooleanOp::Union).map(|r| r.map(|r| (r.counts(), r.volume(1e-8)))));
+          }
+          RS
+          d=$(ls -d got/dumps/*/ | head -1)
+          cargo run -p solidcraft-smlib --example replay2147 --profile ci -- "$d"000000-SmApiBoolean-a.smb "$d"000000-SmApiBoolean-b.smb ascii 2>&1 | tail -30 | tee replay-core-main.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: replay-core-main
+          path: replay-core-main.txt
