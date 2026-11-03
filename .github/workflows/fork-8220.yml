@@ -1,0 +1,257 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#11105 (#8220) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-8220
+on:
+  push:
+    branches: [fork-ci-8220]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+      - name: Agent chat, preferences and i18n tests (ui-egui)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- agent_chat prefs i18n 2>&1 | tail -n 80
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # The GPU path tracer's own tests (no engine code) run out of memory or time on 4 vCPUs, and
+      # two tests run for hours on these runners, on main too.
+      - name: Tests (the pull request's default filter)
+        run: >-
+          cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4
+          -E 'default() - (package(solidcraft-gpu) & test(/^path::/)) - test(=action_matrix_sample) - test(=render_workspace::tests::progressive_image_controls_route_to_the_registered_host)'
+  screenshots:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth x11-apps imagemagick libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: Custom instructions, typed in Preferences, reach an ACP agent's system prompt
+        run: |
+          mkdir -p shots
+          # An ACP agent that answers with the end of the system prompt its session got.
+          cat > "$RUNNER_TEMP/echo_agent.py" <<'PY'
+          import json, sys
+          log = open(sys.argv[1], "a", encoding="utf-8")
+          notes, n = {}, 0
+          def send(obj):
+              sys.stdout.write(json.dumps(obj) + "\n")
+              sys.stdout.flush()
+          for line in sys.stdin:
+              log.write(line)
+              log.flush()
+              try:
+                  msg = json.loads(line)
+              except ValueError:
+                  continue
+              method, rid = msg.get("method"), msg.get("id")
+              if method == "initialize":
+                  send({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"systemPrompt": {}}}, "agentInfo": {"name": "echo-agent", "version": "1"}}})
+              elif method == "session/new":
+                  n += 1
+                  sid = f"s{n}"
+                  notes[sid] = msg["params"]["systemPrompt"]["content"][0]["text"]
+                  send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": sid}})
+              elif method == "session/prompt":
+                  sid = msg["params"]["sessionId"]
+                  note = notes.get(sid, "")
+                  marker = "set in SolidCraft's preferences:\n"
+                  tail = note.split(marker, 1)[1] if marker in note else "(nothing after SolidCraft's own note)"
+                  quoted = "\n".join("> " + l for l in tail.splitlines())
+                  text = f"Session {sid}: my system prompt ({len(note)} characters) ends with:\n\n{quoted}"
+                  send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}}})
+                  send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+          PY
+          cat > "$RUNNER_TEMP/shots.py" <<'PY'
+          import json, os, secrets, socket, subprocess, sys, time
+          tmp = os.environ["RUNNER_TEMP"]
+          port = 18847
+          token = secrets.token_hex(32)
+          env = dict(os.environ, SOLIDCRAFT_CONTROL_TOKEN=token, SOLIDCRAFT_CONTROL_DIR=os.path.join(tmp, "control"))
+          log = open(os.path.join(tmp, "app.log"), "wb")
+          app = subprocess.Popen(["xvfb-run", "-n", "99", "-s", "-screen 0 1600x1000x24 -nolisten tcp", "target/ci/solidcraft", "--control", str(port)],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          deadline = time.monotonic() + 120
+          while True:
+              try:
+                  sock = socket.create_connection(("127.0.0.1", port), timeout=120)
+                  break
+              except OSError:
+                  if app.poll() is not None or time.monotonic() > deadline:
+                      sys.exit("the app never listened")
+                  time.sleep(0.3)
+          io = sock.makefile("rw", encoding="utf-8")
+          n = 0
+          def call(method, params=None, ok=True):
+              global n
+              n += 1
+              req = {"id": n, "method": method, "params": params or {}}
+              if n == 1:
+                  req["token"] = token
+              io.write(json.dumps(req) + "\n")
+              io.flush()
+              reply = json.loads(io.readline())
+              if ok and reply.get("ok") is not True:
+                  sys.exit(f"{method} {params} failed: {reply}")
+              return reply
+          def shot(name):
+              time.sleep(1.5)
+              path = os.path.abspath(f"shots/{name}.png")
+              r = call("ui.screenshot", {"path": path}, ok=False)
+              if r.get("ok") is not True or not os.path.exists(path):
+                  print(f"ui.screenshot failed ({r}), taking the X screen instead", flush=True)
+                  subprocess.run(["import", "-display", ":99", "-window", "root", path], check=True)
+              print(f"shot {path}", flush=True)
+          def handle(name):
+              h = call("ui.handles", {"prefix": name})["result"]
+              found = [x for x in (h if isinstance(h, list) else h.get("handles", [])) if x.get("name") == name]
+              return found[0] if found else None
+          def chat(params=None):
+              return call("ui.agent_chat", params or {})["result"]
+          def wait_chat(done, what):
+              end = time.monotonic() + 60
+              while time.monotonic() < end:
+                  s = chat()
+                  if done(s):
+                      return s
+                  time.sleep(0.3)
+              sys.exit(f"timed out waiting for {what}: {json.dumps(chat())[:3000]}")
+
+          call("ui.resize", {"width": 1600, "height": 1000})
+          call("ui.home", {"open": False}, ok=False)
+          time.sleep(1.0)
+
+          # 1. Preferences -> Assistant: type two lines into Custom instructions.
+          call("ui.prefs", {"open": "Assistant"})
+          time.sleep(1.0)
+          field = handle("prefs:agent_instructions")
+          for _ in range(10):
+              if field and field["y"] < 820:
+                  break
+              call("ui.scroll", {"x": field["x"] if field else 800, "y": 500, "delta": -240})
+              time.sleep(0.5)
+              field = handle("prefs:agent_instructions")
+          if not field:
+              sys.exit("no Custom instructions field on the Assistant page")
+          call("ui.click", {"x": field["x"], "y": field["y"]})
+          time.sleep(0.3)
+          call("ui.text", {"text": "Never call new_design from the chat; work in the open design."})
+          call("ui.key", {"key": "Enter"})
+          call("ui.text", {"text": "Sketch on XZ with explicit plane vectors."})
+          shot("preferences-custom-instructions")
+          typed = chat()["instructions"]
+          print("instructions after typing in Preferences:", json.dumps(typed), flush=True)
+          call("ui.prefs", {"button": "ok"})
+          time.sleep(0.5)
+
+          # 2. Connect an ACP agent that echoes the end of its system prompt.
+          agent_log = os.path.join(tmp, "agent.log")
+          command = f"python3 -I {os.path.join(tmp, 'echo_agent.py')} {agent_log}"
+          chat({"add_agent": {"id": "echo", "name": "Echo agent", "kind": "acp", "command": command}})
+          chat({"agent": "echo", "open": True, "width": 600})
+          chat({"connect": True})
+          wait_chat(lambda s: s["state"] == "ready", "the agent to be ready")
+          chat({"send": "Which instructions did you get?"})
+          wait_chat(lambda s: s["state"] == "ready" and any("agent" in i for i in s["items"]), "the first answer")
+          shot("chat-first-session")
+
+          # 3. Edit the instructions, then New chat: the new session gets the new text.
+          chat({"instructions": "Use M3 screws unless I say otherwise."})
+          chat({"new_chat": True})
+          wait_chat(lambda s: s["state"] == "ready" and not s["items"], "New chat")
+          chat({"send": "And now?"})
+          wait_chat(lambda s: s["state"] == "ready" and any("agent" in i for i in s["items"]), "the second answer")
+          shot("chat-after-new-chat")
+
+          print("\nWhat the agent received in session/new:", flush=True)
+          for line in open(agent_log, encoding="utf-8"):
+              msg = json.loads(line)
+              if msg.get("method") != "session/new":
+                  continue
+              standard = msg["params"]["systemPrompt"]["content"][0]["text"]
+              claude_key = msg["params"]["_meta"]["systemPrompt"]["append"]
+              print(json.dumps({"standard field == _meta.systemPrompt.append": standard == claude_key,
+                                "characters": len(standard),
+                                "ends with": standard[-260:]}, ensure_ascii=False, indent=1), flush=True)
+          call("app.quit", {"force": True}, ok=False)
+          app.wait(timeout=60)
+          PY
+          set -o pipefail
+          python3 -I "$RUNNER_TEMP/shots.py" | tee shots/transcript.txt
+      - if: always()
+        run: tail -c 12000 "$RUNNER_TEMP/app.log" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots
+          path: shots/
