@@ -130,6 +130,11 @@ jobs:
           print(sys.argv[2], "bodies", v["body_count"], [(b["name"], round(b["volume_mm3"], 3), b["faces"]) for b in v["bodies"]], [t["error"] for t in v["timeline"] if t["error"]])
           PY
           done | tee "joins-${{ matrix.name }}.txt"
+      - name: Sketch1 as solved, and the joined bodies' faces
+        run: |
+          echo '{"commands": [{"command": "sketch.inspect", "params": {"sketch": "Sketch1"}}]}' > "$RUNNER_TEMP/joins/sk1.json"
+          target/ci/solidcraft-cli run "$RUNNER_TEMP/joins/sk1.json" --in "$RUNNER_TEMP/joins/v-no_tube.json" --results --allow-errors --json-out "sketch1-${{ matrix.name }}.json" ||             target/ci/solidcraft-cli run "$RUNNER_TEMP/joins/sk1.json" --in "$RUNNER_TEMP/design/design.sc" --results --allow-errors --json-out "sketch1-${{ matrix.name }}.json" || true
+          head -c 3000 "sketch1-${{ matrix.name }}.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -138,3 +143,4 @@ jobs:
             summary-${{ matrix.name }}.txt
             timeline-${{ matrix.name }}.txt
             joins-${{ matrix.name }}.txt
+            sketch1-${{ matrix.name }}.json
