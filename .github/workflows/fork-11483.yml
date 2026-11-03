@@ -1,0 +1,62 @@
+# Fork-only (never upstream): reproduce tangency-labs/solidcraft#11483 (the app closed after
+# Interference checked two parts) with the released solidcraft-cli of 0.30.0 and 0.40.0-rc.1.
+name: fork-11483
+on:
+  push:
+    branches: [fork-ci-11483]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CRASH_ZIP: https://github.com/user-attachments/files/34306774/20261103-065955-9984e0818631c021.zip
+jobs:
+  release-cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, ver: 0.30.0, asset: solidcraft-0.30.0-windows-x86-portable.zip }
+          - { os: windows-latest, ver: 0.30.0, asset: solidcraft-0.30.0-windows-x64-portable.zip }
+          - { os: windows-latest, ver: 0.40.0-rc.1, asset: solidcraft-0.40.0-rc.1-windows-x86-portable.zip }
+          - { os: windows-latest, ver: 0.40.0-rc.1, asset: solidcraft-0.40.0-rc.1-windows-x64-portable.zip }
+          - { os: ubuntu-24.04, ver: 0.30.0, asset: solidcraft-0.30.0-linux-x86_64.tar.gz }
+          - { os: ubuntu-24.04, ver: 0.40.0-rc.1, asset: solidcraft-0.40.0-rc.1-linux-x86_64.tar.gz }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/fork-11483
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - run: python -m pip install psutil
+      - name: Download the release and the crash report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "v${{ matrix.ver }}" -R tangency-labs/solidcraft -p "${{ matrix.asset }}" -D "$RUNNER_TEMP/rel"
+          curl -sSfL --retry 5 -o "$RUNNER_TEMP/crash.zip" "$CRASH_ZIP"
+          python -I - "$RUNNER_TEMP" "${{ matrix.asset }}" <<'EOF'
+          import sys, tarfile, zipfile, pathlib
+          tmp, asset = pathlib.Path(sys.argv[1]), sys.argv[2]
+          a = tmp / "rel" / asset
+          (zipfile.ZipFile(a) if asset.endswith(".zip") else tarfile.open(a)).extractall(tmp / "app")
+          zipfile.ZipFile(tmp / "crash.zip").extractall(tmp / "crash")
+          cli = [p for p in (tmp / "app").rglob("*") if p.name in ("solidcraft-cli", "solidcraft-cli.exe")]
+          print("cli:", cli)
+          (tmp / "cli.txt").write_text(str(cli[0]))
+          EOF
+      - name: Replay the report (clearance and interference of the two parts)
+        run: |
+          crash=$(ls -d "$RUNNER_TEMP"/crash/*/)
+          python -I .github/fork-11483/repro.py "$(cat "$RUNNER_TEMP/cli.txt")" "$crash" out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repro-${{ matrix.ver }}-${{ matrix.asset }}
+          path: out/
