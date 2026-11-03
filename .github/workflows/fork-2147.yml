@@ -144,6 +144,11 @@ jobs:
           head -c 2000 kernel-case.json; echo
           mkdir -p dumps && cp -r "$RUNNER_TEMP/dumps/." dumps/ && find dumps -type f -exec ls -la {} \;
           for t in dumps/*/*.txt; do echo "== $t"; cat "$t"; done
+      - name: Replay the dumped union and write its inputs as ASCII
+        run: |
+          mkdir -p ascii
+          d=$(ls -d dumps/*/ | head -1)
+          cargo run -p solidcraft-smlib --example replay2147 --profile ci --locked -- "$d"000000-SmApiBoolean-a.smb "$d"000000-SmApiBoolean-b.smb ascii | tee replay.txt || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -155,3 +160,5 @@ jobs:
             sketch1-${{ matrix.name }}.json
             kernel-case.json
             dumps/
+            ascii/
+            replay.txt
