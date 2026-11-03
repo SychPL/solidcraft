@@ -60,3 +60,53 @@ jobs:
         with:
           name: repro-${{ matrix.ver }}-${{ matrix.asset }}
           path: out/
+  # The dialog's own work after Compute (a boolean and a mesh, called on the window thread,
+  # whose stack is 1 MiB on Windows), on threads with 1, 2 and 8 MiB stacks.
+  dialog-stack:
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11, v0.30.0]
+        target: [x86_64-pc-windows-msvc, i686-pc-windows-msvc]
+    runs-on: windows-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: actions/checkout@v4
+        with:
+          path: fork-ci
+          sparse-checkout: .github/fork-11483
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Add the test (main's or 0.30.0's kernel calls)
+        run: |
+          f=crates/engine/tests/fork_11483.rs
+          cp fork-ci/.github/fork-11483/fork_11483.rs "$f"
+          if [ "${{ matrix.ref }}" = v0.30.0 ]; then
+            sed -i 's|WORLD|s.world_state()|; s|MESH|o.tessellate((o.size() * 2e-3).max(1e-3))|' "$f"
+          else
+            sed -i 's|WORLD|s.world_state().unwrap()|; s|MESH|o.mesh(\&kernel::MeshTolerance::chord((o.size() * 2e-3).max(1e-3)))|' "$f"
+          fi
+          grep -n "world_state\|tessellate\|mesh(" "$f"
+          curl -sSfL --retry 5 -o "$RUNNER_TEMP/crash.zip" "$CRASH_ZIP"
+          python -I -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$RUNNER_TEMP/crash.zip" "$RUNNER_TEMP/crash"
+          echo "FORK_11483_CRASH=$(ls -d "$RUNNER_TEMP"/crash/*/ | sed 's|/$||')" >> "$GITHUB_ENV"
+      - run: cargo test --release -p solidcraft-engine --test fork_11483 --target ${{ matrix.target }} --no-run
+      - name: Each stack size in its own process, at the saved pose and after the drags
+        run: |
+          set +e +o pipefail
+          for reach in no yes; do
+            if [ $reach = yes ]; then export FORK_11483_REACH=1; fi
+            for t in stack_8192_kib stack_2048_kib stack_1024_kib; do
+              echo "::group::reach=$reach $t"
+              cargo test --release -p solidcraft-engine --test fork_11483 --target ${{ matrix.target }} -- --exact $t --nocapture 2>&1 | grep -v "^\s*Compiling\|^\s*Finished\|^\s*Running" | tail -n 25
+              echo "exit ${PIPESTATUS[0]}"
+              echo "::endgroup::"
+            done
+          done
