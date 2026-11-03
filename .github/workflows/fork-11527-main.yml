@@ -1,0 +1,38 @@
+# Fork-only (never upstream): do the six tests shard 3 failed in run 41624217317 for
+# tangency-labs/solidcraft#11533 fail on main too, on the same GitHub-hosted runners?
+name: fork-11527-main
+on:
+  push:
+    branches: [fork-ci-11527-main]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  same-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [main, pr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.build == 'main' && '4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11' || '776889aaebcd1bfe8be7e823a8dbf5f9dba9e7e0' }}
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: The six tests (${{ matrix.build }})
+        run: >-
+          cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-fail-fast
+          -E 'test(=eval::cost_tests::a_tap_marking_still_searches_the_bodies_within_its_reach) | test(=a_later_round_after_opening_blends_the_saved_rounds_again) | test(=tests::shell_tangent_chain_that_opens_every_face_explains_how_to_keep_walls) | test(=blend_corner::tests::issue2422_vertical_after_separate_bottom_rounds) | test(=corner_g2::tests::the_box_corner_g2_patch_is_a_closed_solid_curvature_continuous_to_its_neighbours) | test(=corner_g2::tests::a_long_setback_keeps_the_g2_patch_inside_the_box)'
