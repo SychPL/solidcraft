@@ -1,0 +1,118 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#11541 (#11483) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-11483-pr
+on:
+  push:
+    branches: [fork-ci-11483-pr]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  BASE: 4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11
+  TEST: interference_meshes_each_overlap_on_the_kernels_stack
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          cargo xtask skills
+          cargo xtask i18n --check
+          cargo xtask mesh-decisions
+          bash scripts/test-format-pending.sh
+      - name: The regression test, then the same test with the overlaps intersected on the calling thread (as before the fix)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- dialogs_assembly::tests::interference_ 2>&1 | tail -n 20
+          sed -i 's/kernel::map_with_local_pools(&pairs, usize::MAX, |&(a, b)| {/pairs.iter().map(|\&(a, b)| -> kernel::Result<Option<Mesh>> {/' crates/ui-egui/src/dialogs_assembly.rs
+          git diff --stat
+          set +e
+          cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- "$TEST" 2>&1 | tail -n 20
+          status=${PIPESTATUS[0]}
+          git checkout crates/ui-egui/src/dialogs_assembly.rs
+          echo "before the fix: exit $status"
+          test "$status" -ne 0
+  windows-test:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- dialogs_assembly::tests::interference_ 2>&1 | tail -n 20
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Tests of the affected packages (as the pull request's CI picks them), known failures allowed
+        run: |
+          git diff -z --name-only "$BASE" HEAD -- . ':!.github' > "$RUNNER_TEMP/paths"
+          python3 -I scripts/ci/affected.py --paths "$RUNNER_TEMP/paths" | tee "$RUNNER_TEMP/affected"
+          full=$(sed -n 's/^full=//p' "$RUNNER_TEMP/affected")
+          packages=$(sed -n 's/^packages=//p' "$RUNNER_TEMP/affected")
+          scope=(--workspace)
+          if [ "$full" != true ]; then scope=(); for p in $packages; do scope+=(-p "$p"); done; fi
+          junit=${CARGO_TARGET_DIR:-target}/nextest/ci/junit.xml
+          rm -f "$junit"
+          status=0
+          cargo nextest run "${scope[@]}" --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \
+            --ignore-default-filter -E "(default() & not (binary(action_matrix) & test(=action_matrix_sample))) & not (package(=solidcraft-gpu) & test(/^path::/))" || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then exit "$status"; fi
+          cargo xtask known-failing --junit "$junit"
