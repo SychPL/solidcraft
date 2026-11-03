@@ -135,6 +135,15 @@ jobs:
           echo '{"commands": [{"command": "sketch.inspect", "params": {"sketch": "Sketch1"}}]}' > "$RUNNER_TEMP/joins/sk1.json"
           target/ci/solidcraft-cli run "$RUNNER_TEMP/joins/sk1.json" --in "$RUNNER_TEMP/joins/v-no_tube.json" --results --allow-errors --json-out "sketch1-${{ matrix.name }}.json" ||             target/ci/solidcraft-cli run "$RUNNER_TEMP/joins/sk1.json" --in "$RUNNER_TEMP/design/design.sc" --results --allow-errors --json-out "sketch1-${{ matrix.name }}.json" || true
           head -c 3000 "sketch1-${{ matrix.name }}.json"
+      - name: The failing join's SMLib inputs (kernel-cases --dumps)
+        run: |
+          mkdir -p "$RUNNER_TEMP/kc/booleans/2147-join" "$RUNNER_TEMP/dumps"
+          cp "$RUNNER_TEMP/joins/v-full.json" "$RUNNER_TEMP/kc/booleans/2147-join/recipe.json"
+          echo '{"sources": ["tangency-labs/solidcraft#2147"], "what": "probe", "source": "analytic", "method": "probe", "body_count": 1, "volume_mm3": 276022.772}' > "$RUNNER_TEMP/kc/booleans/2147-join/expected.json"
+          target/ci/solidcraft-cli kernel-cases "$RUNNER_TEMP/kc/booleans/2147-join" --json --dumps="$RUNNER_TEMP/dumps" > kernel-case.json || true
+          head -c 2000 kernel-case.json; echo
+          mkdir -p dumps && cp -r "$RUNNER_TEMP/dumps/." dumps/ && find dumps -type f -exec ls -la {} \;
+          for t in dumps/*/*.txt; do echo "== $t"; cat "$t"; done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -144,3 +153,5 @@ jobs:
             timeline-${{ matrix.name }}.txt
             joins-${{ matrix.name }}.txt
             sketch1-${{ matrix.name }}.json
+            kernel-case.json
+            dumps/
