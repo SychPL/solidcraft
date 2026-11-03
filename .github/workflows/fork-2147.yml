@@ -192,7 +192,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: tangency-labs/solidcore
-          ref: 845bdb4e0
+          ref: 845bdb4e01bf4c093b52ce34639f4216b4f9f7a3
           path: solidcore-main
           sparse-checkout: crates
       - uses: actions/download-artifact@v4
@@ -205,9 +205,8 @@ jobs:
         run: |
           mv solidcore-main "$RUNNER_TEMP/solidcore-main"
           mkdir -p .cargo ascii crates/smlib/examples
-          printf '[patch."https://github.com/tangency-labs/solidcore"]
-solidcore = { path = "%s/crates/solidcore" }
-' "$RUNNER_TEMP/solidcore-main" >> .cargo/config.toml
+          echo '[patch."https://github.com/tangency-labs/solidcore"]' >> .cargo/config.toml
+          echo "solidcore = { path = \"$RUNNER_TEMP/solidcore-main/crates/solidcore\" }" >> .cargo/config.toml
           cat .cargo/config.toml
           cat > crates/smlib/examples/replay2147.rs <<'RS'
           //! Fork-only probe for #2147: reads a failing SmApiBoolean's dumped inputs, writes them as ASCII
