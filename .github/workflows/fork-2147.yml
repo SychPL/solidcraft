@@ -1,0 +1,83 @@
+# Fork-only (never upstream): checks tangency-labs/solidcraft#2147 (Sketch Offset of four projected
+# curves) with the reporter's design, on main and on the commit before #11000.
+name: fork-2147
+on:
+  push:
+    branches: [fork-ci-2147]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  offset:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: main
+            ref: 4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11
+          - name: before-11000
+            ref: b978eeddcddd02225be4c4090d7247e65edcd694
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft-cli --profile ci --locked
+      - name: The reporter's design (data only)
+        run: |
+          mkdir "$RUNNER_TEMP/design" "$RUNNER_TEMP/zip"
+          curl -sSL -o "$RUNNER_TEMP/zip/2.5.zip" https://github.com/user-attachments/files/34197738/2.5.zip
+          unzip -q "$RUNNER_TEMP/zip/2.5.zip" -d "$RUNNER_TEMP/zip/x"
+          cp "$RUNNER_TEMP/zip/x/2,5.sc" "$RUNNER_TEMP/design/design.sc"
+      - name: Sketch2's offset as opened (3 mm), then at 0.5, 1, 3 and 6 mm
+        run: |
+          mkdir "$RUNNER_TEMP/work"
+          cat > "$RUNNER_TEMP/work/summary.py" <<'PY'
+          import json, sys
+          def found(v):
+              if isinstance(v, dict):
+                  if "curves" in v and "profiles" in v:
+                      yield v
+                  for x in v.values():
+                      yield from found(x)
+              elif isinstance(v, list):
+                  for x in v:
+                      yield from found(x)
+          label, path = sys.argv[1], sys.argv[2]
+          print(f"== {label}")
+          try:
+              out = json.load(open(path, encoding="utf-8"))
+          except Exception as e:
+              print(f"  no result: {e}")
+              sys.exit(0)
+          for r in list(found(out))[-1:]:
+              for c in r["curves"]:
+                  if c["id"] in ("l3", "a3", "l4", "a4"):
+                      s, e = c["start_at"], c["end_at"]
+                      extra = f" r={c['radius']:.3f}" if c["type"] == "arc" else ""
+                      print(f"  {c['id']:3} ({s[0]:9.3f},{s[1]:8.3f}) -> ({e[0]:9.3f},{e[1]:8.3f}){extra}")
+              ps = r["profiles"]
+              print(f"  profiles: {len(ps)}", [round(p["area_mm2"], 2) for p in ps])
+          PY
+          inspect='{"command": "sketch.inspect", "params": {"sketch": "Sketch2"}}'
+          for d in opened 0.5 1 3 6; do
+            if [ "$d" = opened ]; then steps="$inspect"; else
+              steps="{\"command\": \"parameters.change\", \"params\": {\"name\": \"d9\", \"expression\": \"$d mm\"}}, $inspect"; fi
+            echo "{\"commands\": [$steps]}" > "$RUNNER_TEMP/work/$d.json"
+            target/ci/solidcraft-cli run "$RUNNER_TEMP/work/$d.json" --in "$RUNNER_TEMP/design/design.sc" --results --allow-errors               --json-out "$RUNNER_TEMP/work/out-$d.json" 2> "$RUNNER_TEMP/work/err-$d.txt" || echo "  (exit $?: $(head -c 400 "$RUNNER_TEMP/work/err-$d.txt"))"
+            python3 -I "$RUNNER_TEMP/work/summary.py" "d9 = $d" "$RUNNER_TEMP/work/out-$d.json"
+          done | tee "summary-${{ matrix.name }}.txt"
+          cp "$RUNNER_TEMP/work/out-opened.json" "out-${{ matrix.name }}.json" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: offset-${{ matrix.name }}
+          path: |
+            summary-${{ matrix.name }}.txt
+            out-${{ matrix.name }}.json
