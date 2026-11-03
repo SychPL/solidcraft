@@ -1,0 +1,217 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#11537 (#10967) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-10967
+on:
+  push:
+    branches: [fork-ci-10967]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+      - name: Control server and MCP bridge tests
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft -- control_server::tests 2>&1 | tail -n 40
+          cargo test --profile ci --locked -p solidcraft-mcp --lib 2>&1 | tail -n 40
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # The GPU path tracer's own tests (no engine code) run out of memory or time on 4 vCPUs, and
+      # two tests run for hours on these runners, on main too.
+      - name: Tests (the pull request's default filter)
+        run: >-
+          cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4
+          -E 'default() - (package(solidcraft-gpu) & test(/^path::/)) - test(=action_matrix_sample) - test(=render_workspace::tests::progressive_image_controls_route_to_the_registered_host)'
+  # The app on Windows (the reporter's platform), from main and from this branch: every connection
+  # taken, then a client past the limit, raw and through `solidcraft-cli mcp`.
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [main, pr]
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.build == 'main' && '4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11' || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The regression test on Windows
+        if: matrix.build == 'pr'
+        run: cargo test -p solidcraft --profile ci --locked -- control_server::tests::a_connection_past_the_limit_reads_why
+      - run: cargo build -p solidcraft -p solidcraft-cli --profile ci --locked
+      - name: Every connection taken, then one more (#10967)
+        env:
+          BUILD: ${{ matrix.build }}
+        shell: pwsh
+        run: |
+          $py = @'
+          import json, os, secrets, socket, subprocess, sys, time
+          tmp, build = os.environ["RUNNER_TEMP"], os.environ["BUILD"]
+          port = 47901
+          token = secrets.token_hex(32)
+          local = os.path.join(tmp, "local")
+          os.makedirs(local, exist_ok=True)
+          env = dict(os.environ, SOLIDCRAFT_CONTROL_TOKEN=token, LOCALAPPDATA=local, SOLIDCRAFT_CRASH_DIR=os.path.join(tmp, "crashes"))
+          applog = open(os.path.join(tmp, "app.log"), "wb")
+          app = subprocess.Popen([r"target\ci\solidcraft.exe", "--control", str(port)], env=env, stdout=applog, stderr=subprocess.STDOUT)
+          out = open("transcript-" + build + ".txt", "w", encoding="utf-8")
+          def say(s):
+              print(s, flush=True)
+              out.write(s + "\n")
+              out.flush()
+          def line_of(s):
+              buf = b""
+              while not buf.endswith(b"\n"):
+                  chunk = s.recv(65536)
+                  if not chunk:
+                      break
+                  buf += chunk
+              return buf
+          def ask(s, req):
+              s.sendall((json.dumps(dict(req, token=token)) + "\n").encode())
+              return json.loads(line_of(s))
+          deadline = time.monotonic() + 300
+          while True:
+              try:
+                  first = socket.create_connection(("127.0.0.1", port), timeout=120)
+                  break
+              except OSError:
+                  if time.monotonic() > deadline or app.poll() is not None:
+                      sys.exit("the app did not start")
+                  time.sleep(0.5)
+          say(f"[{build}] app up: ui.inspect ok={ask(first, {'id': 1, 'method': 'ui.inspect', 'params': {}})['ok']}")
+          seats = [first]
+          while len(seats) < 16:
+              s = socket.create_connection(("127.0.0.1", port), timeout=120)
+              r = ask(s, {"id": 1, "method": "control.capabilities", "params": {}})
+              if not r.get("ok"):
+                  sys.exit(f"seat {len(seats) + 1} refused: {r}")
+              seats.append(s)
+          say(f"[{build}] {len(seats)} clients connected, each holding its connection as an MCP server does")
+          # A client sends its request as soon as it connects, and reads the reply a moment later.
+          def late_client():
+              s = socket.create_connection(("127.0.0.1", port), timeout=30)
+              try:
+                  s.sendall((json.dumps({"id": 1, "method": "ui.inspect", "params": {}, "token": token}) + "\n").encode())
+                  time.sleep(0.3)
+                  reply = line_of(s)
+                  if not reply:
+                      return "the connection closed with no reply"
+                  rest = s.recv(65536)
+                  return "reply " + reply.decode().strip() + (", then the end of the connection" if rest == b"" else f", then {rest!r}")
+              except OSError as e:
+                  return f"{type(e).__name__}: {e}"
+              finally:
+                  s.close()
+          for i in range(5):
+              say(f"[{build}] client 17, try {i + 1}: {late_client()}")
+          clilog = open(os.path.join(tmp, "mcp.log"), "w", encoding="utf-8")
+          cli = subprocess.Popen([r"target\ci\solidcraft-cli.exe", "mcp", "--connect", f"127.0.0.1:{port}"], env=env,
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=clilog, text=True, encoding="utf-8")
+          def rpc(rid, method, params):
+              cli.stdin.write(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}) + "\n")
+              cli.stdin.flush()
+              while True:
+                  msg = json.loads(cli.stdout.readline())
+                  if msg.get("id") == rid:
+                      return msg
+          rpc(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "demo", "version": "1"}})
+          cli.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+          cli.stdin.flush()
+          box = {"name": "execute", "arguments": {"command": "solid.box", "params": {"length": 20, "width": 20, "height": 20}}}
+          def tool(rid, call):
+              r = rpc(rid, "tools/call", call)["result"]
+              text = " ".join(c.get("text", "") for c in r.get("content", []))
+              return ("error: " if r.get("isError") else "ok: ") + " ".join(text.split())[:400]
+          for i in range(5):
+              say(f"[{build}] MCP execute solid.box, every connection taken, try {i + 1}: {tool(10 + i, box)}")
+          seats.pop().close()
+          time.sleep(1)
+          say(f"[{build}] one client left; MCP execute solid.box again: {tool(20, box)}")
+          say(f"[{build}] MCP measure: {tool(21, {'name': 'measure', 'arguments': {}})}")
+          cli.stdin.close()
+          cli.wait(timeout=60)
+          try:
+              ask(seats[0], {"id": 99, "method": "app.quit", "params": {"force": True}})
+              app.wait(timeout=120)
+          except (OSError, ValueError, subprocess.TimeoutExpired):
+              app.kill()
+          '@
+          Set-Content -Path "$env:RUNNER_TEMP\demo.py" -Value $py -Encoding utf8
+          python "$env:RUNNER_TEMP\demo.py"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP\app.log" -Tail 60; exit 1 }
+      - if: always()
+        shell: pwsh
+        run: |
+          Get-Content "$env:RUNNER_TEMP\mcp.log" -ErrorAction SilentlyContinue | Select-Object -Last 30
+          Copy-Item "$env:RUNNER_TEMP\app.log", "$env:RUNNER_TEMP\mcp.log" . -ErrorAction SilentlyContinue
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.build }}
+          path: |
+            transcript-*.txt
+            app.log
+            mcp.log
