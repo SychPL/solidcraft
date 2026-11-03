@@ -1,0 +1,12 @@
+shot /home/runner/work/solidcraft/solidcraft/shots/1-answer-pr.png
+switcher at 1135,235; send at 1565,887; drag from 1135,527 to 1135,235
+shot /home/runner/work/solidcraft/solidcraft/shots/2-dragged-up-pr.png
+
+[pr] Copy took 50 lines (xclip exit 0 )
+  solidcraft-cli was not found next to the app, so the agent can't reach the design.
+  Give me the parts list.
+  Bill of materials for the bracket:
+  ...
+  | 43 | M4 x 53 screw | 43 |
+  | 44 | M5 x 54 screw | 44 |
+  | 45 | M3 x 55 screw
