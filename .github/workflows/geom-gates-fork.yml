@@ -1,0 +1,75 @@
+# Fork only, never part of a pull request: #3013's checks on GitHub-hosted runners. Main's CI
+# runs on runners only the upstream organisation has, so its jobs never start on a fork; this
+# scratch branch carries exactly the PR's head plus this file and the timing test it appends.
+name: W06a checks (fork only)
+on:
+  push:
+    branches: ['ci/w06a-*']
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  gates:
+    name: Geom gates and wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy (geom)
+        run: cargo clippy -p solidcraft-geom --all-targets --locked -- -D warnings
+      - name: WebAssembly build (geom)
+        run: cargo build -p solidcraft-geom --target wasm32-unknown-unknown --locked
+      - name: Dependency layers
+        run: cargo xtask layers
+      - name: Sorted lists
+        run: cargo xtask lists
+  tests:
+    name: Geom tests and the kernel's hidden-line tests, graded by the known-failing list
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      # As in main's Native Linux tests: a test on tests/KNOWN_FAILING_TESTS may fail, any other
+      # fails the step, and so does a listed test that passes.
+      - name: Tests
+        run: |
+          status=0
+          cargo nextest run -p solidcraft-geom -p solidcraft-kernel --cargo-profile ci --locked --profile ci --no-tests=pass \
+            -E 'package(solidcraft-geom) | (package(solidcraft-kernel) & binary(hidden_lines))' || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then exit "$status"; fi
+          cargo xtask known-failing --junit target/nextest/ci/junit.xml
+  timings:
+    name: Timings (${{ matrix.build }})
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [before, after]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      # before: #3013's head on the old drawings base (c68e49c0); after: this branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.build == 'before' && 'c68e49c06327f3625b4ac2bebc4389058c97e372' || github.sha }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: fork-tools
+          sparse-checkout: .github/fork-w06a
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Timings (release)
+        run: |
+          cat fork-tools/.github/fork-w06a/timing_test.rs >> crates/geom/src/hlr_tests.rs
+          cargo test --release -p solidcraft-geom --lib -- --ignored --nocapture --test-threads 1 hlr_timing zz_review_timings
