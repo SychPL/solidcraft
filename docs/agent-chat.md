@@ -53,6 +53,11 @@ in an answer. Copy, Cut and Paste do not also operate on selected CAD geometry. 
 pointer back over the model does not change this: click outside Assistant to return the
 keyboard to CAD. Closing or minimising the panel also releases it.
 
+To select more of the conversation than fits in the panel, drag the selection to its top or
+bottom edge and hold it there: the conversation scrolls, faster the further past the edge you
+go, and the selection grows with it. It stays when its start scrolls out of view, and Copy takes
+all of it.
+
 - **Docking:** on the left, Assistant is the first panel, before vertical history and the browser.
   The drag highlight shows the actual destination bounds. Drag the panel's header (the dotted grip and the title) to the other half of the
   window and let go. The side it would land on lights up while you drag. You can also pick
@@ -202,6 +207,13 @@ shows its **version** (from `--version`, given three seconds) and whether a **lo
 Version checks and agent sessions also use those folders on their `PATH`, so adapters can find
 runtimes such as Node when SolidCraft is opened from Finder or the Dock. Existing absolute
 `PATH` entries keep their order; no shell startup files are run.
+If a detected Node adapter fails with `SyntaxError: Unexpected token 'with'` on an older Node,
+SolidCraft checks these folders for a Node version that supports import attributes. For an
+adapter with an `env node` shebang, it retries with that Node and keeps the same interpreter
+for the chat session, including programs the adapter starts. These extra checks run in the
+background with a shared three-second limit for finding Node. Working adapters keep their
+original launch command. If no suitable Node is found, the agent's error names the old version
+and asks you to update Node and press **Refresh**.
 SolidCraft only checks whether the agent's own login file (`~/.claude/.credentials.json`,
 `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, …) or one of its key variables exists. It never
 reads the file and never starts the agent to find out. On macOS Claude Code keeps its login in

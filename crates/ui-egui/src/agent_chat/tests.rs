@@ -2084,6 +2084,17 @@ fn the_card_of_a_running_endpoint_changes_the_chats_model() {
     script.report(models_reply("fast"));
     h.step(&json!({"call": "ui.prefs", "params": {"open": "AI"}})).unwrap();
     h.frames(4);
+    // The permission cards put endpoint controls below the fixed page's viewport.
+    for _ in 0..32 {
+        let at = handle_at("prefs:ai_model:api-1").unwrap();
+        let body = crate::scenario::rect_of("prefs:page_body").unwrap();
+        if body.contains(at) {
+            break;
+        }
+        h.call("ui.scroll", json!({"x":body.center().x,"y":body.center().y,"delta":if at.y < body.top() {100} else {-100}}));
+        h.frames(30);
+    }
+    assert!(crate::scenario::rect_of("prefs:page_body").unwrap().contains(handle_at("prefs:ai_model:api-1").unwrap()));
     h.step(&json!({"click": {"handle": "prefs:ai_model:api-1"}})).unwrap();
     h.frames(3);
     assert!(handle_at("prefs:ai_model:api-1:smart").is_some());
@@ -2965,6 +2976,133 @@ fn narrow_chat() -> crate::scenario::Harness {
     h
 }
 
+/// The rows `a_selection_held_at_the_edge_scrolls_and_keeps_its_start` draws that are in view:
+/// each row's number, where its text is, and the conversation's view.
+fn rows_in_view(h: &crate::scenario::Harness) -> Vec<(usize, egui::Rect, egui::Rect)> {
+    let mut rows = Vec::new();
+    for clipped in &h.shapes {
+        crate::test_support::each_shape(&clipped.shape, &mut |shape| {
+            if let egui::Shape::Text(text) = shape
+                && let Some(n) = text.galley.text().strip_prefix("Parts list row ").and_then(|n| n.parse::<usize>().ok())
+            {
+                let at = egui::Rect::from_min_size(text.pos, text.galley.size());
+                if clipped.clip_rect.intersects(at) {
+                    rows.push((n, at, clipped.clip_rect));
+                }
+            }
+        });
+    }
+    rows.sort_by_key(|r| r.0);
+    rows
+}
+
+/// #11527: a text selection held at the conversation's edge scrolls it, and keeps its start once
+/// that has scrolled out of view, so Copy takes the hidden rows too. Resting there with no button
+/// down, or after letting go, scrolls nothing.
+#[test]
+fn a_selection_held_at_the_edge_scrolls_and_keeps_its_start() {
+    let mut h = narrow_chat();
+    for n in 0..80 {
+        h.app.agent_chat.items.push(Item::Agent { thought: false, text: format!("Parts list row {n}") });
+    }
+    h.frames(4);
+    let rows = rows_in_view(&h);
+    let (&(top, _, view), &(last, last_at, _)) = (rows.first().expect("rows in view"), rows.last().expect("rows in view"));
+    assert_eq!(last, 79, "the conversation shows its end");
+    let edge = egui::pos2(last_at.left() + 10.0, view.top() + 4.0);
+    let press = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    h.frame_with(vec![egui::Event::PointerMoved(edge)]);
+    h.frames(20);
+    assert_eq!(rows_in_view(&h)[0].0, top, "no button down: the pointer at the edge scrolls nothing");
+
+    // Start the selection at the end of the last row and hold it at the top edge.
+    let start = last_at.right_center() - egui::vec2(1.0, 0.0);
+    h.frame_with(vec![egui::Event::PointerMoved(start), press(start, true)]);
+    h.frame_with(vec![egui::Event::PointerMoved(edge)]);
+    for _ in 0..600 {
+        if !rows_in_view(&h).iter().any(|r| r.0 == last) {
+            break;
+        }
+        h.frame();
+    }
+    let rows = rows_in_view(&h);
+    assert!(!rows.iter().any(|r| r.0 == last), "holding the selection at the top scrolls the last row out of view");
+    let reached = rows[0].0;
+    assert!(reached < top, "row {reached} is in view, it was {top}");
+    h.frame_with(vec![press(edge, false)]);
+    let after = rows_in_view(&h)[0].0;
+    h.frames(20);
+    assert_eq!(rows_in_view(&h)[0].0, after, "letting go stops the scrolling");
+    assert!(h.ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().has_selection(), "the selection keeps its start out of view");
+
+    h.frame_with(vec![egui::Event::Copy]);
+    let copied = h
+        .output
+        .commands
+        .iter()
+        .find_map(|c| if let egui::OutputCommand::CopyText(text) = c { Some(text.clone()) } else { None })
+        .expect("Copy takes the selection");
+    // The selection's moving end is under the pointer, in the first row or two in view.
+    for n in [reached + 2, 78] {
+        assert!(copied.contains(&format!("Parts list row {n}\n")), "row {n} is copied whole: {copied:?}");
+    }
+    assert!(copied.trim_end().ends_with("Parts list row 79"), "the selection ends where it started, out of view: {copied:?}");
+}
+
+/// #11527: only a drag towards the edge scrolls. Holding a press on the line at the top edge, a
+/// double click there, or a drag from there into the conversation leaves it where it is.
+#[test]
+fn a_press_at_the_edge_without_a_drag_towards_it_scrolls_nothing() {
+    let mut h = narrow_chat();
+    // One paragraph taller than the conversation: every point in view is on its text.
+    h.app.agent_chat.items.push(Item::Agent { thought: false, text: "Bill of materials ".repeat(400) });
+    h.frames(4);
+    // Where the answer's text starts, the conversation's view, and the first line wholly in view
+    // (egui itself scrolls a pressed line that is cut off at the edge into view).
+    let answer = |h: &crate::scenario::Harness| {
+        let mut found = None;
+        for clipped in &h.shapes {
+            crate::test_support::each_shape(&clipped.shape, &mut |shape| {
+                if let egui::Shape::Text(text) = shape
+                    && text.galley.text().starts_with("Bill of materials")
+                    && clipped.clip_rect.intersects(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                {
+                    let line = text.galley.rows.iter().map(|r| r.rect().translate(text.pos.to_vec2())).find(|r| r.top() >= clipped.clip_rect.top());
+                    found = Some((text.pos.y, clipped.clip_rect, line.expect("a line wholly in view")));
+                }
+            });
+        }
+        found.expect("the answer is in view")
+    };
+    let (rest, view, line) = answer(&h);
+    let press = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    let edge = egui::pos2(view.left() + 40.0, line.center().y);
+    assert!(edge.y < view.top() + 32.0, "the first line in view is by the edge");
+    h.frame_with(vec![egui::Event::PointerMoved(edge), press(edge, true)]);
+    h.frames(30);
+    assert_eq!(answer(&h).0, rest, "a press held at the edge scrolls nothing");
+    h.frame_with(vec![press(edge, false)]);
+    for _ in 0..2 {
+        h.frame_with(vec![press(edge, true)]);
+        h.frame_with(vec![press(edge, false)]);
+    }
+    h.frames(10);
+    assert_eq!(answer(&h).0, rest, "a double click at the edge scrolls nothing");
+    let inside = edge + egui::vec2(0.0, 20.0);
+    h.frame_with(vec![egui::Event::PointerMoved(edge), press(edge, true)]);
+    h.frame_with(vec![egui::Event::PointerMoved(inside)]);
+    h.frames(30);
+    assert_eq!(answer(&h).0, rest, "a drag from the edge into the conversation scrolls nothing");
+    h.frame_with(vec![press(inside, false)]);
+    // Towards the edge it does.
+    let middle = view.center();
+    h.frame_with(vec![egui::Event::PointerMoved(middle), press(middle, true)]);
+    h.frame_with(vec![egui::Event::PointerMoved(edge)]);
+    h.frames(30);
+    assert!(answer(&h).0 > rest, "a drag to the top edge scrolls the answer down");
+    h.frame_with(vec![press(edge, false)]);
+}
+
 /// #10172: before a connection, what the panel draws under the agent switcher (the Agent row
 /// with Add agent and Refresh) keeps the panel's side margin, docked and floating: nothing starts
 /// at the panel's edge or is cut off at the other one.
@@ -3310,7 +3448,7 @@ fn box_selection(app: &mut SolveApp) -> Vec<solidcraft_engine::Sel> {
     app.run("solid.box", json!({"length": 40, "width": 30, "height": 20})).expect("a box");
     let face = app.session.execute("model.faces", &json!({"body": "Body1"})).expect("faces")["faces"][0].clone();
     let edge = app.session.execute("model.edges", &json!({"body": "Body1"})).expect("edges")["edges"][0].clone();
-    let at = |v: &Value| solidcraft_engine::geom::Vec3::new(v[0].as_f64().unwrap_or(0.0), v[1].as_f64().unwrap_or(0.0), v[2].as_f64().unwrap_or(0.0));
+    let at = |v: &Value| solidcore_record::Vec3::new(v[0].as_f64().unwrap_or(0.0), v[1].as_f64().unwrap_or(0.0), v[2].as_f64().unwrap_or(0.0));
     vec![
         Sel::Face { body: "Body1".into(), index: face["index"].as_u64().unwrap_or(0) as usize, point: at(&face["point"]) },
         Sel::Edge { body: "Body1".into(), index: edge["index"].as_u64().unwrap_or(0) as usize, point: at(&edge["mid"]) },
@@ -3388,8 +3526,8 @@ fn a_huge_selection_is_counted_not_dropped_silently() {
     assert_eq!((both.items.len(), both.total()), (context::MAX_ITEMS, 200));
     // Unknown bodies, faces and features are described by what is known, without panicking.
     let odd = [
-        Sel::Face { body: "Nope".into(), index: usize::MAX, point: solidcraft_engine::geom::Vec3::new(f64::NAN, f64::INFINITY, 0.0) },
-        Sel::Edge { body: "Nope".into(), index: 7, point: solidcraft_engine::geom::Vec3::new(0.0, 0.0, 0.0) },
+        Sel::Face { body: "Nope".into(), index: usize::MAX, point: solidcore_record::Vec3::new(f64::NAN, f64::INFINITY, 0.0) },
+        Sel::Edge { body: "Nope".into(), index: 7, point: solidcore_record::Vec3::new(0.0, 0.0, 0.0) },
         Sel::Feature { id: u64::MAX },
         Sel::Plane { name: "XY".into() },
         Sel::SketchCurve { id: "c1".into(), sketch: None },
@@ -3882,15 +4020,19 @@ fn the_picks_go_with_the_next_message_once() {
     assert_eq!(script.calls().pop().as_deref(), Some("prompt: and now?"));
 }
 
-/// Two clicks on two rims are two things, not four edges (a click on a rim selects both halves for
-/// the commands; the chat counts and describes what was clicked).
+/// Two clicks on two rims are two things (the chat counts and describes what was clicked). The
+/// cylinder is a circle drawn as two half arcs, extruded: one wall, each rim one closed edge.
 #[test]
 fn a_rim_clicked_once_is_one_item_not_its_pieces() {
     use solidcraft_engine::Sel;
     let (mut app, script, ctx) = app_with_script();
-    app.run("solid.cylinder", json!({"radius": 10, "height": 20})).expect("a cylinder");
+    app.run("sketch.create", json!({"plane": "XY"})).expect("a sketch");
+    app.run("sketch.arc.three_point", json!({"start": [10, 0], "end": [-10, 0], "through": [0, 10]})).expect("an arc");
+    app.run("sketch.arc.three_point", json!({"start": [-10, 0], "end": [10, 0], "through": [0, -10]})).expect("an arc");
+    app.run("sketch.finish", json!({})).expect("the sketch");
+    app.run("solid.extrude", json!({"distance": 20})).expect("a cylinder");
     let (name, top, bottom, mid_top, mid_bottom) = {
-        let st = app.session.world_state();
+        let st = crate::open_meshing::session_world(&app.session);
         let body = &st.bodies[0];
         let mesh = body.mesh();
         let rim_at = |z: f64| mesh.edges.iter().position(|e| e.len() > 3 && e.iter().all(|p| (p.z - z).abs() < 1e-6)).expect("a rim");
@@ -3899,21 +4041,22 @@ fn a_rim_clicked_once_is_one_item_not_its_pieces() {
     };
     crate::viewport::select(&mut app, Some(Sel::Edge { body: name.clone(), index: top, point: mid_top }), false, false);
     crate::viewport::select(&mut app, Some(Sel::Edge { body: name, index: bottom, point: mid_bottom }), true, false);
-    assert_eq!(app.session.selection.len(), 4, "two clicks selected four halves");
+    assert_eq!(app.session.selection.len(), 2, "two clicks selected the two rims");
     assert_eq!(selected_count(&mut app), 2, "the checkbox counts the two clicks");
 
     app.agent_chat.attach_selection = true;
     send(&mut app, &ctx, "these two rims".into());
     let prompt = script.calls().pop().expect("a prompt");
     assert!(prompt.contains("2 item(s)"), "{prompt}");
-    assert_eq!(prompt.matches("(2 pieces)").count(), 2, "{prompt}");
-    // A rim of radius 10 is about 62.8 mm round (the kernel's own figure), both halves together.
-    assert!(prompt.contains("Edge 62.") && prompt.contains("mm (2 pieces)"), "{prompt}");
+    assert!(!prompt.contains("pieces)"), "{prompt}");
+    // A rim of radius 10 is about 62.8 mm round (the kernel's own figure), the whole circle.
+    assert_eq!(prompt.matches("Edge 62.").count(), 2, "{prompt}");
     let Some(Item::User { context, .. }) = app.agent_chat.items.last() else { panic!("a sent message") };
     assert_eq!(context.items.len(), 2);
     assert_eq!(context.total(), 2);
-    // The detail still names the piece indices the tools take.
-    assert!(context.items.iter().all(|i| i.detail.contains("indices [")), "{:?}", context.items);
+    // The detail names the index the tools take.
+    let indices = [top, bottom].map(|i| format!("index {i}, "));
+    assert!(context.items.iter().zip(&indices).all(|(item, index)| item.detail.contains(index)), "{:?}", context.items);
 }
 
 /// The same for a surface the kernel splits at a seam: one click on the cylinder's wall is one item.
@@ -3927,7 +4070,7 @@ fn a_split_wall_clicked_once_is_one_item() {
         .and_then(|faces| faces.iter().find(|f| f["cylinder"]["radius"].is_number()).cloned())
         .expect("the wall");
     let at = &wall["point"];
-    let point = solidcraft_engine::geom::Vec3::new(at[0].as_f64().unwrap_or(0.0), at[1].as_f64().unwrap_or(0.0), at[2].as_f64().unwrap_or(0.0));
+    let point = solidcore_record::Vec3::new(at[0].as_f64().unwrap_or(0.0), at[1].as_f64().unwrap_or(0.0), at[2].as_f64().unwrap_or(0.0));
     crate::viewport::select(
         &mut app,
         Some(Sel::Face { body: "Body1".into(), index: wall["index"].as_u64().unwrap_or(0) as usize, point }),
