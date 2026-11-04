@@ -1,0 +1,236 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#11533 (#11527) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-11527
+on:
+  push:
+    branches: [fork-ci-11527]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+      - name: Agent chat tests (ui-egui)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- agent_chat 2>&1 | tail -n 80
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # The GPU path tracer's own tests (no engine code) run out of memory or time on 4 vCPUs, and
+      # two tests run for hours on these runners, on main too.
+      - name: Tests (the pull request's default filter)
+        run: >-
+          cargo nextest run --workspace --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4
+          -E 'default() - (package(solidcraft-gpu) & test(/^path::/)) - test(=action_matrix_sample) - test(=render_workspace::tests::progressive_image_controls_route_to_the_registered_host)'
+  demo:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [main, pr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.build == 'main' && '4bdffef06180fb3a2e8fbd4b15c7d3f60e55bd11' || github.sha }}
+      - name: Install Xvfb, xclip and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb x11-apps imagemagick xclip xdotool libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: Drag a selection from the end of a long answer to the top of the chat (#11527)
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          mkdir -p shots
+          # An ACP agent that answers every prompt with a 60-row bill of materials (a Markdown table).
+          cat > "$RUNNER_TEMP/list_agent.py" <<'PY'
+          import json, sys
+          def send(obj):
+              sys.stdout.write(json.dumps(obj) + "\n")
+              sys.stdout.flush()
+          table = "| # | Part | Qty |\n|---|---|---|\n" + "\n".join(f"| {n} | M{3 + n % 3} x {10 + n} screw | {n} |" for n in range(1, 61))
+          rows = "Bill of materials for the bracket:\n\n" + table + "\n\nThat is 60 parts."
+          for line in sys.stdin:
+              try:
+                  msg = json.loads(line)
+              except ValueError:
+                  continue
+              method, rid = msg.get("method"), msg.get("id")
+              if method == "initialize":
+                  send({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": 1, "agentCapabilities": {}, "agentInfo": {"name": "list-agent", "version": "1"}}})
+              elif method == "session/new":
+                  send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": "s1"}})
+              elif method == "session/prompt":
+                  send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": rows}}}})
+                  send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+              elif rid is not None:
+                  send({"jsonrpc": "2.0", "id": rid, "result": {}})
+          PY
+          cat > "$RUNNER_TEMP/demo.py" <<'PY'
+          import json, os, secrets, socket, subprocess, sys, time
+          tmp, build = os.environ["RUNNER_TEMP"], os.environ["BUILD"]
+          port = 18847
+          token = secrets.token_hex(32)
+          # A plain X server on :99, so xclip can read the clipboard the app owns.
+          xvfb = subprocess.Popen(["Xvfb", ":99", "-screen", "0", "1600x1000x24", "-nolisten", "tcp"], start_new_session=True)
+          time.sleep(2)
+          env = dict(os.environ, DISPLAY=":99", SOLIDCRAFT_CONTROL_TOKEN=token, SOLIDCRAFT_CONTROL_DIR=os.path.join(tmp, "control"))
+          log = open(os.path.join(tmp, "app.log"), "wb")
+          app = subprocess.Popen(["target/ci/solidcraft", "--control", str(port)], env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          deadline = time.monotonic() + 120
+          while True:
+              try:
+                  sock = socket.create_connection(("127.0.0.1", port), timeout=120)
+                  break
+              except OSError:
+                  if app.poll() is not None or time.monotonic() > deadline:
+                      sys.exit("the app never listened")
+                  time.sleep(0.3)
+          io = sock.makefile("rw", encoding="utf-8")
+          n = 0
+          def call(method, params=None, ok=True):
+              global n
+              n += 1
+              req = {"id": n, "method": method, "params": params or {}}
+              if n == 1:
+                  req["token"] = token
+              io.write(json.dumps(req) + "\n")
+              io.flush()
+              reply = json.loads(io.readline())
+              if ok and reply.get("ok") is not True:
+                  sys.exit(f"{method} {params} failed: {reply}")
+              return reply
+          def shot(name):
+              time.sleep(1.5)
+              path = os.path.abspath(f"shots/{name}.png")
+              r = call("ui.screenshot", {"path": path}, ok=False)
+              if r.get("ok") is not True or not os.path.exists(path):
+                  print(f"ui.screenshot failed ({r}), taking the X screen instead", flush=True)
+                  subprocess.run(["import", "-display", ":99", "-window", "root", path], check=True)
+              print(f"shot {path}", flush=True)
+          def chat(params=None):
+              return call("ui.agent_chat", params or {})["result"]
+          def wait_chat(done, what):
+              end = time.monotonic() + 60
+              while time.monotonic() < end:
+                  s = chat()
+                  if done(s):
+                      return s
+                  time.sleep(0.3)
+              sys.exit(f"timed out waiting for {what}: {json.dumps(chat())[:3000]}")
+          def handle(name):
+              for h in call("ui.handles", {"prefix": name})["result"]:
+                  if h["name"] == name:
+                      return h["x"], h["y"]
+              sys.exit(f"no handle {name}")
+
+          call("ui.resize", {"width": 1600, "height": 1000})
+          call("ui.home", {"open": False}, ok=False)
+          time.sleep(1.0)
+          command = f"python3 -I {os.path.join(tmp, 'list_agent.py')}"
+          chat({"add_agent": {"id": "list", "name": "Parts list agent", "kind": "acp", "command": command}})
+          chat({"agent": "list", "open": True, "width": 600})
+          chat({"connect": True})
+          wait_chat(lambda s: s["state"] == "ready", "the agent to be ready")
+          chat({"send": "Give me the parts list."})
+          wait_chat(lambda s: s["state"] == "ready" and any("agent" in i for i in s["items"]), "the answer")
+          shot(f"1-answer-{build}")
+
+          # Press in the table near the bottom of the conversation (well above the message box), drag
+          # up past the top of the conversation onto the panel's header and hold there, then let go.
+          sx, sy = handle("agent_chat:switcher")
+          bx, by = handle("agent_chat:send")
+          x0, y0 = sx, by - 360
+          print(f"switcher at {sx:.0f},{sy:.0f}; send at {bx:.0f},{by:.0f}; drag from {x0:.0f},{y0:.0f} to {sx:.0f},{sy:.0f}", flush=True)
+          call("ui.drag", {"x0": x0, "y0": y0, "x1": sx, "y1": sy, "steps": 12, "hold_end": 150})
+          shot(f"2-dragged-up-{build}")
+          # Ctrl+C as a real key press (the control channel's keys do not make a Copy event).
+          xenv = dict(os.environ, DISPLAY=":99")
+          win = subprocess.run(["xdotool", "search", "--name", "SolidCraft"], env=xenv, capture_output=True, text=True).stdout.split()
+          if win:
+              subprocess.run(["xdotool", "windowfocus", "--sync", win[0]], env=xenv, timeout=20)
+          subprocess.run(["xdotool", "key", "ctrl+c"], env=xenv, timeout=20)
+          time.sleep(1.5)
+          got = subprocess.run(["xclip", "-selection", "clipboard", "-o"], env=dict(os.environ, DISPLAY=":99"), capture_output=True, text=True, timeout=20)
+          rows = [l for l in got.stdout.splitlines() if l.strip()]
+          print(f"\n[{build}] Copy took {len(rows)} lines (xclip exit {got.returncode} {got.stderr.strip()})", flush=True)
+          for l in rows[:3] + (["..."] if len(rows) > 6 else []) + rows[-3:] if len(rows) > 6 else rows:
+              print("  " + l, flush=True)
+          call("app.quit", {"force": True}, ok=False)
+          app.wait(timeout=60)
+          xvfb.terminate()
+          PY
+          set -o pipefail
+          python3 -I "$RUNNER_TEMP/demo.py" | tee "shots/transcript-$BUILD.txt"
+      - if: always()
+        run: tail -c 12000 "$RUNNER_TEMP/app.log" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: demo-${{ matrix.build }}
+          path: shots/
