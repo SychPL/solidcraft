@@ -1,0 +1,100 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#11144 (#10854) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-10854
+on:
+  push:
+    branches: [fork-ci-10854]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: The docs-only commit alone selects no package
+        run: |
+          printf '%s\0' docs/agent-chat.md > "$RUNNER_TEMP/docs-only"
+          python3 -I scripts/ci/affected.py --paths "$RUNNER_TEMP/docs-only"
+      - name: Format
+        if: always()
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+      - name: Agent chat tests (ui-egui)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- agent_chat 2>&1 | tail -n 80
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # As upstream's pull request tests: the packages the whole pull request reaches
+      # (scripts/ci/affected.py), graded against tests/KNOWN_FAILING_TESTS.
+      - name: Tests (the affected packages, the pull request's default filter)
+        run: |
+          printf '%s\0' crates/ui-egui/src/agent_chat/mod.rs crates/ui-egui/src/agent_chat/tests.rs docs/agent-chat.md > "$RUNNER_TEMP/paths"
+          python3 -I scripts/ci/affected.py --paths "$RUNNER_TEMP/paths" | tee "$RUNNER_TEMP/affected"
+          scope=(--workspace)
+          if [ "$(sed -n 's/^full=//p' "$RUNNER_TEMP/affected")" != true ]; then
+            scope=(); for p in $(sed -n 's/^packages=//p' "$RUNNER_TEMP/affected"); do scope+=(-p "$p"); done
+          fi
+          junit=target/nextest/ci/junit.xml
+          rm -f "$junit"
+          status=0
+          cargo nextest run "${scope[@]}" --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \
+            -E 'default() - (package(solidcraft-gpu) & test(/^path::/)) - test(=action_matrix_sample)' || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then exit "$status"; fi
+          cargo xtask known-failing --junit "$junit"
