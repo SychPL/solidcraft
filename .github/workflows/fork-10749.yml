@@ -1,0 +1,140 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#11504 (#10749) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-10749
+on:
+  push:
+    branches: [fork-ci-10749]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  BASE: fbd30b0bd03629dc13ebbeb3e7802c9234dae522
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          cargo xtask skills
+          cargo xtask i18n --check
+          bash scripts/test-format-pending.sh
+      - name: Batch tests (engine, MCP, control channel)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-engine --lib -- batch_preflight 2>&1 | tail -n 30
+          cargo test --profile ci --locked -p solidcraft-mcp --lib -- batch 2>&1 | tail -n 60
+          cargo test --profile ci --locked -p solidcraft-mcp --lib -- a_bridged_server_checks_calls_at_its_param_check_level 2>&1 | tail -n 20
+          cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- engine_batch 2>&1 | tail -n 40
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Tests of the affected packages (as the pull request's CI picks them), known failures allowed
+        run: |
+          git diff -z --name-only "$BASE" HEAD -- . ':!.github' > "$RUNNER_TEMP/paths"
+          python3 -I scripts/ci/affected.py --paths "$RUNNER_TEMP/paths" | tee "$RUNNER_TEMP/affected"
+          full=$(sed -n 's/^full=//p' "$RUNNER_TEMP/affected")
+          packages=$(sed -n 's/^packages=//p' "$RUNNER_TEMP/affected")
+          scope=(--workspace)
+          if [ "$full" != true ]; then scope=(); for p in $packages; do scope+=(-p "$p"); done; fi
+          junit=${CARGO_TARGET_DIR:-target}/nextest/ci/junit.xml
+          rm -f "$junit"
+          status=0
+          cargo nextest run "${scope[@]}" --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \
+            --ignore-default-filter -E "(default() & not (binary(action_matrix) & test(=action_matrix_sample))) & not (package(=solidcraft-gpu) & test(/^path::/))" || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then exit "$status"; fi
+          cargo xtask known-failing --junit "$junit"
+  demo:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [main, pr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.build == 'main' && env.BASE || github.sha }}
+      # The demo script lives only on this fork-only branch.
+      - uses: actions/checkout@v4
+        with:
+          path: fork-ci
+          sparse-checkout: .github/fork-10749
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft -p solidcraft-cli --profile ci --locked
+      - name: A batch refused before its first step, through the control channel and MCP (#10749)
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          mkdir -p out
+          set -o pipefail
+          python3 -I fork-ci/.github/fork-10749/demo.py | tee "out/transcript-$BUILD.txt"
+      - if: always()
+        run: tail -c 8000 "$RUNNER_TEMP/app.log" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: demo-${{ matrix.build }}
+          path: out/
