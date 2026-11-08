@@ -122,9 +122,10 @@ impl Remote {
         if reply.get("error").and_then(Value::as_str) == Some(solidcraft_control::auth::TOO_MANY_CONNECTIONS) {
             self.conn.disconnect();
             return Err(format!(
-                "the SolidCraft app at {} refused this call without running it: it is serving as many connections as it takes (each \
+                "the SolidCraft app at {} {}: it is serving as many connections as it takes (each \
                  MCP server, CLI run or script connected to it holds one). Close one of them, or send the call again once one has ended",
-                self.conn.addr()
+                self.conn.addr(),
+                super::REFUSED_UNRUN
             ));
         }
         self.echoed = echoed(&reply);
