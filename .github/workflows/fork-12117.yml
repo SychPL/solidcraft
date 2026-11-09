@@ -1,0 +1,114 @@
+# Fork-only (never upstream): the SolidCraft #12117 solidcore case, its solidcore-diag pictures, and a replay
+# of the report's script on solidcraft-cli built from main, v0.40.0-rc.2 and v0.30.1.
+name: fork-12117
+on:
+  push:
+    branches: [fork-ci-12117]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  cases:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: goldens unit tests (solidcraft)
+        working-directory: solidcore
+        run: cargo test --profile goldens -p goldens --lib solidcraft
+      - name: the cases, each step's body written as .smb
+        working-directory: solidcore
+        run: SOLIDCRAFT_DUMP="$PWD/../dump" cargo run --profile goldens -p goldens -- --solidcraft-cases '12117-*' --no-report
+      - name: build solidcore-diag
+        working-directory: solidcore
+        run: cargo build --release -p diagnostics
+      - name: draw every dumped body
+        run: |
+          set -u
+          diag=$(ls solidcore/bin/release/solidcore-diag solidcore/target/release/solidcore-diag 2>/dev/null | head -1)
+          echo "diag: $diag"
+          for f in dump/*/*.smb; do
+            c=$(basename "$(dirname "$f")"); s=$(basename "$f" .smb)
+            case "$c" in p_*)
+              case "$s" in *result) ;; *) continue;; esac
+              d="pics/$c/t-35_-30"; mkdir -p "$d"
+              "$diag" "$f" --out "$d" --view "-35,-30" --edges-above 1.5e-5 > "$d/$s.txt" 2>&1 || echo "FAILED $f"
+              echo "== $c/$s"; head -1 "$d/$s.txt"
+              continue;;
+            esac
+            for v in "-35,-30" "-60,-20" "35,-20" "0,0" "90,0"; do
+              d="pics/$c/v${v/,/_}"
+              mkdir -p "$d"
+              "$diag" "$f" --out "$d" --view "$v" > "$d/$s.txt" 2>&1 || echo "FAILED $f $v"
+            done
+            for v in "-35,-30" "90,0"; do
+              d="pics/$c/t${v/,/_}"
+              mkdir -p "$d"
+              "$diag" "$f" --out "$d" --view "$v" --edges-above 1.5e-5 > "$d/$s.txt" 2>&1 || echo "FAILED $f $v tol"
+            done
+            echo "== $c/$s"; head -3 "pics/$c/v-35_-30/$s.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-12117
+          path: |
+            dump
+            pics
+  replay:
+    if: contains(github.event.head_commit.message, '[replay]')
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [main, v0.40.0-rc.2, v0.30.1]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: tangency-labs/solidcraft
+          ref: ${{ matrix.ref }}
+      - run: scripts/ci/build-jobs.sh || true
+      - run: git log --oneline -1
+      - run: cargo build --release -p solidcraft-cli
+      - name: replay the report's script
+        run: |
+          mkdir -p replay
+          strap='{"command": "sketch.create", "params": {"plane": "YZ"}},
+            {"command": "sketch.arc.center_point", "params": {"center": [0, 50], "start": [-40, 50], "end": [40, 50], "clockwise": true}},
+            {"command": "sketch.line", "params": {"points": ["a1.end", [40, 0]], "infer": false}}'
+          ustrap='{"command": "sketch.create", "params": {"plane": "YZ"}},
+            {"command": "sketch.arc.center_point", "params": {"center": [0, 50], "start": [-40, 50], "end": [40, 50], "clockwise": true}},
+            {"command": "sketch.line", "params": {"points": [[-40, 0], "a1.start"], "infer": false}},
+            {"command": "sketch.line", "params": {"points": ["a1.end", [40, 0]], "infer": false}}'
+          thin='{"command": "sketch.finish", "params": {}},
+            {"command": "solid.extrude", "params": {"thin": true, "thickness": 2.5, "side": "center", "distance": 20, "direction": "symmetric", "operation": "new", "body_name": "Strap"}}'
+          box='{"command": "solid.box", "params": {"length": 20, "width": 2.5, "height": 50, "corner": [-10, 38.75, 0], "body_name": "Strap"}}'
+          cyl() { echo "{\"command\": \"solid.cylinder\", \"params\": {\"diameter\": $1, \"height\": $2, \"base\": [0, 38.75, 0], \"axis\": \"Y\", \"operation\": \"join\", \"targets\": [\"Strap\"]}}"; }
+          echo "{\"commands\": [$strap, $thin]}" > replay/strap.json
+          echo "{\"commands\": [$strap, $thin, $(cyl 20 2.5)]}" > replay/flush.json
+          echo "{\"commands\": [$strap, $thin, $(cyl 20 2.4)]}" > replay/tall2_4.json
+          echo "{\"commands\": [$strap, $thin, $(cyl 19.9 2.5)]}" > replay/d19_9.json
+          echo "{\"commands\": [$ustrap, $thin, $(cyl 20 2.5)]}" > replay/ustrap.json
+          echo "{\"commands\": [$box, $(cyl 20 2.5)]}" > replay/boxleg.json
+          for f in strap flush tall2_4 d19_9 ustrap boxleg; do
+            echo "=== $f"
+            timeout 600 ./target/release/solidcraft-cli eval replay/$f.json --json-out replay/$f.out.json > replay/$f.eval.txt 2>&1 || true
+            tail -4 replay/$f.eval.txt
+            python3 - "replay/$f.out.json" <<'PY' || true
+          import json, sys
+          try:
+              o = json.load(open(sys.argv[1], encoding="utf-8"))
+          except Exception as e:
+              print("  no eval json:", e); sys.exit()
+          for t in o.get("timeline", []):
+              if t.get("error") or t.get("warning"):
+                  print("  ", t.get("name"), t.get("error") or t.get("warning"))
+          for b in o.get("bodies", []):
+              print("  body", b.get("name"), "V", b.get("volume_mm3"), "F/E/V", b.get("faces"), b.get("edges"), b.get("vertices"), "closed", b.get("closed"))
+          PY
+            timeout 600 ./target/release/solidcraft-cli run replay/$f.json 2>&1 | tail -3 || true
+          done
