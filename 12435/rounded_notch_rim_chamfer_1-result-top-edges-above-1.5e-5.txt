@@ -1,0 +1,10 @@
+body tolerance 1e-5; 20 edges; 1372 triangles; 0 faces refused
+  edge   14  tolerance 1.785e-4  faces [6, 1]
+  edge    7  tolerance 1.600e-4  faces [4, 6]
+  edge    8  tolerance 1.600e-4  faces [4, 7]
+  edge    9  tolerance 1.600e-4  faces [4, 8]
+  edge   11  tolerance 1.600e-4  faces [3, 8]
+  edge   12  tolerance 1.600e-4  faces [4, 9]
+  edge   13  tolerance 1.600e-4  faces [5, 9]
+  edge   15  tolerance 1.600e-4  faces [7, 6]
+wrote pics/rounded_notch_rim_chamfer_1/t0_-89/05-result.png and pics/rounded_notch_rim_chamfer_1/t0_-89/05-result.json
