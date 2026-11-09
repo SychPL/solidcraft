@@ -32,18 +32,18 @@ jobs:
           echo "diag: $diag"
           for f in dump/*/*.smb; do
             c=$(basename "$(dirname "$f")"); s=$(basename "$f" .smb)
-            case "$c" in t[0-9]*|*_sc_fixes) continue;; esac
-            for v in "-35,30" "-60,20" "-90,0" "0,89"; do
+            case "$c" in t[0-9]*) continue;; esac
+            for v in "-35,-30" "-60,-20" "0,0" "0,-89"; do
               d="pics/$c/v${v/,/_}"
               mkdir -p "$d"
               "$diag" "$f" --out "$d" --view "$v" > "$d/$s.txt" 2>&1 || echo "FAILED $f $v"
             done
-            for v in "-35,30"; do
+            for v in "-35,-30" "0,0"; do
               d="pics/$c/t${v/,/_}"
               mkdir -p "$d"
               "$diag" "$f" --out "$d" --view "$v" --edges-above 1.5e-5 > "$d/$s.txt" 2>&1 || echo "FAILED $f $v tol"
             done
-            echo "== $c/$s"; head -3 "pics/$c/v-35_30/$s.txt"
+            echo "== $c/$s"; head -3 "pics/$c/v-35_-30/$s.txt"
           done
       - uses: actions/upload-artifact@v4
         if: always()
@@ -71,7 +71,7 @@ jobs:
       - name: replay the report's script for each tilt
         run: |
           mkdir -p replay
-          for a in 0 0.25 0.5 1 2 3 4 5; do
+          for a in 0 0.25 0.5 1 1.5 2 2.5 3 4 5; do
             read sx cz px <<< "$(python3 -c "import math; r = math.radians($a); print(repr(math.sin(r)), repr(math.cos(r)), repr(5 * math.tan(r)))")"
             cat > replay/a$a.json <<JSON
           {"commands": [
