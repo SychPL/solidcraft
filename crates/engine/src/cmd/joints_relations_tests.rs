@@ -274,3 +274,42 @@ fn a_panel_full_of_parts_placed_by_relations_stays_solved() {
         }
     }
 }
+
+/// #12426 diagnostic (temporary): a leaf on a hinge along x and an angle relation between the
+/// base's top and the leaf's side; the hinge turn and the joints' values after each angle.
+#[test]
+fn diag_12426() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Base"}));
+    run(&mut s, "solid.box", json!({"length": 100, "width": 100, "height": 10, "corner": [0, 0, 0]}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "component.create", json!({"name": "Leaf"}));
+    run(&mut s, "solid.box", json!({"length": 100, "width": 10, "height": 60, "corner": [0, 45, 10]}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    let base = occ(&s, "Base");
+    run(&mut s, "occurrence.ground", json!({"occurrence": base, "grounded": true}));
+    run(&mut s, "joint.origin", json!({"name": "Top", "occurrence": "Base", "face": [50.0, 20.0, 10.0]}));
+    run(&mut s, "joint.origin", json!({"name": "Side", "occurrence": "Leaf", "face": [50.0, 55.0, 40.0]}));
+    let r = run(&mut s, "joint.as_built", json!({"type": "revolute", "name": "Hinge", "a": "Base", "b": "Leaf", "at": {"occurrence": 0, "point": [0, 50, 10], "z": [1, 0, 0]}}));
+    eprintln!("hinge: conflicts {}", r["conflicts"]);
+    let turn = |s: &Session| {
+        let n = place(s, "Leaf", Vec3::new(50.0, 56.0, 40.0)) - place(s, "Leaf", Vec3::new(50.0, 55.0, 40.0));
+        n.z.atan2(n.y).to_degrees()
+    };
+    let values = |s: &Session| {
+        s.doc.assembly.joints.iter().map(|j| format!("{}={:?}", j.name, j.values.iter().map(|v| (v * 1000.0).round() / 1000.0).collect::<Vec<_>>())).collect::<Vec<_>>().join(" ")
+    };
+    eprintln!("start: turn {:.3} {}", turn(&s), values(&s));
+    let r = relation(&mut s, "angle", "Top", "Side", json!({"angle": "120 deg"}));
+    eprintln!("create 120: turn {:.3} conflicts {} {}", turn(&s), r["conflicts"], values(&s));
+    let start = s.scratch();
+    for a in [130, 140, 150, 160, 170, 180, 190, 200, 260] {
+        let mut t = start.scratch();
+        let r = run(&mut t, "joint.edit", json!({"joint": "angle Top-Side", "angle": format!("{a} deg")}));
+        eprintln!("from 120 -> {a}: turn {:.3} conflicts {} {}", turn(&t), r["conflicts"], values(&t));
+    }
+    for a in [130, 140, 150, 160, 170, 180, 190, 200, 260] {
+        let r = run(&mut s, "joint.edit", json!({"joint": "angle Top-Side", "angle": format!("{a} deg")}));
+        eprintln!("step -> {a}: turn {:.3} conflicts {} {}", turn(&s), r["conflicts"], values(&s));
+    }
+}

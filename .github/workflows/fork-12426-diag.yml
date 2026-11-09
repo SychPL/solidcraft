@@ -1,0 +1,23 @@
+# Fork-only (never upstream): a diagnostic run for tangency-labs/solidcraft#14350 (#12426).
+name: fork-12426-diag
+on:
+  push:
+    branches: [fork-ci-12426-diag]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  diag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Angle joint diagnostic
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-engine --lib diag_12426 -- --nocapture 2>&1 | grep -E '^(hinge|start|create|from|step|test |thread|test result)'
