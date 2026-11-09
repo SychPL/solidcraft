@@ -1,0 +1,190 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#14243 (#13336) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-13336
+on:
+  push:
+    branches: [fork-ci-13336]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  MAIN_SHA: 6c85bb76f6d4e93bb97f5e4bf58d1310778c23b7
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask layers
+          cargo xtask lists
+          cargo xtask licences --check
+      - name: Shared crates build and test on their own
+        if: always()
+        run: cargo xtask shared
+      - name: MCP server crate and SolidCraft's MCP tests
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-mcp-server 2>&1 | grep -E '^(test |running)'
+          cargo test --profile ci --locked -p solidcraft-mcp 2>&1 | grep -E '^(running|test result|failures|---- )'
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # As upstream's pull request tests: the packages the change reaches (scripts/ci/affected.py),
+      # graded against tests/KNOWN_FAILING_TESTS.
+      - name: Tests (the affected packages, the pull request's default filter)
+        run: |
+          printf '%s\0' crates/mcp-server/README.md crates/mcp-server/src/content.rs crates/mcp-server/src/lib.rs \
+            crates/mcp-server/src/schema.rs crates/mcp-server/src/server.rs crates/mcp-server/src/tests.rs \
+            crates/mcp/src/server.rs > "$RUNNER_TEMP/paths"
+          python3 -I scripts/ci/affected.py --paths "$RUNNER_TEMP/paths" | tee "$RUNNER_TEMP/affected"
+          scope=(--workspace)
+          if [ "$(sed -n 's/^full=//p' "$RUNNER_TEMP/affected")" != true ]; then
+            scope=(); for p in $(sed -n 's/^packages=//p' "$RUNNER_TEMP/affected"); do scope+=(-p "$p"); done
+          fi
+          junit=target/nextest/ci/junit.xml
+          rm -f "$junit"
+          status=0
+          cargo nextest run "${scope[@]}" --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \
+            -E 'default() - (package(solidcraft-gpu) & test(/^path::/)) - test(=action_matrix_sample)' || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then exit "$status"; fi
+          cargo xtask known-failing --junit "$junit"
+  transcript:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [main, pr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.build == 'main' && env.MAIN_SHA || github.sha }}
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft-cli --profile ci --locked
+      - name: SolidCraft's MCP server, headless, answers the lifecycle, resource, prompt and completion methods
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          mkdir -p out
+          cat > "$RUNNER_TEMP/transcript.py" <<'PY'
+          import hashlib, json, os, subprocess, sys
+          build = os.environ["BUILD"]
+          server = subprocess.Popen(["target/ci/solidcraft-cli", "mcp", "--headless"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=open(os.path.join(os.environ["RUNNER_TEMP"], "mcp.log"), "wb"), text=True, encoding="utf-8")
+          raw = open(f"out/replies-{build}.jsonl", "w", encoding="utf-8", newline="\n")
+          n = 0
+          def send(method, params=None, notification=False):
+              global n
+              msg = {"jsonrpc": "2.0", "method": method}
+              if params is not None:
+                  msg["params"] = params
+              if not notification:
+                  n += 1
+                  msg["id"] = n
+              server.stdin.write(json.dumps(msg) + "\n")
+              server.stdin.flush()
+              if notification:
+                  print(f"[{build}] -> {method} (notification, no reply)", flush=True)
+                  return
+              line = server.stdout.readline()
+              if not line:
+                  sys.exit(f"no reply to {method}")
+              raw.write(line)
+              digest = hashlib.sha256(line.encode("utf-8")).hexdigest()[:16]
+              shown = line.strip()
+              if len(shown) > 400:
+                  shown = shown[:400] + f"... ({len(line)} bytes)"
+              print(f"[{build}] -> {method} {json.dumps(params) if params is not None else ''}\n[{build}] <- sha256 {digest} {shown}", flush=True)
+          send("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fork-ci", "version": "1"}})
+          send("notifications/initialized", notification=True)
+          send("resources/list", {})
+          send("resources/templates/list", {})
+          send("prompts/list", {})
+          send("prompts/get", {"name": "describe", "arguments": {}})
+          send("completion/complete", {"ref": {"type": "ref/prompt", "name": "describe"}, "argument": {"name": "part", "value": ""}})
+          send("resources/read", {"uri": "solidcraft://design"})
+          send("resources/read", {"uri": "solidcraft://commands"})
+          send("resources/read", {"uri": "solidcraft://nope"})
+          send("logging/setLevel", {"level": "info"})
+          raw.close()
+          server.stdin.close()
+          server.wait(timeout=60)
+          PY
+          set -o pipefail
+          python3 -I "$RUNNER_TEMP/transcript.py" | tee "out/transcript-${BUILD}.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transcript-${{ matrix.build }}
+          path: |
+            out/
+            ${{ runner.temp }}/mcp.log
+  compare:
+    needs: transcript
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: transcript-*
+      - name: Every reply of SolidCraft's MCP server is byte-identical on main and on the PR
+        run: |
+          main=$(find transcript-main -name replies-main.jsonl)
+          pr=$(find transcript-pr -name replies-pr.jsonl)
+          wc -l "$main" "$pr"
+          sha256sum "$main" "$pr"
+          if cmp "$main" "$pr"; then
+            echo "byte-identical: $(wc -l < "$pr") replies"
+          else
+            diff <(cut -c1-300 "$main") <(cut -c1-300 "$pr") || true
+            exit 1
+          fi
