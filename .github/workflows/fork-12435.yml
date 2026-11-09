@@ -32,7 +32,13 @@ jobs:
           echo "diag: $diag"
           for f in dump/*/*.smb; do
             c=$(basename "$(dirname "$f")"); s=$(basename "$f" .smb)
-            case "$c" in p_*) continue;; esac
+            case "$c" in p_*)
+              case "$s" in *result) ;; *) continue;; esac
+              d="pics/$c/t-35_-30"; mkdir -p "$d"
+              "$diag" "$f" --out "$d" --view "-35,-30" --edges-above 1.5e-5 > "$d/$s.txt" 2>&1 || echo "FAILED $f"
+              echo "== $c/$s"; head -1 "$d/$s.txt"
+              continue;;
+            esac
             for v in "-35,-30" "35,-30" "145,-30" "-145,-30" "0,-89"; do
               d="pics/$c/v${v/,/_}"
               mkdir -p "$d"
