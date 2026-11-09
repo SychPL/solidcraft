@@ -1,0 +1,206 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#11670 (#1458) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-1458
+on:
+  push:
+    branches: [fork-ci-1458]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  MAIN_SHA: a77b7ab2e463e41ae3ac27a05250765f0db0123d
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask assets
+          cargo xtask icons
+          cargo xtask layers
+          cargo xtask ui-containers
+          cargo xtask lists
+          bash scripts/test-format-pending.sh
+      - name: Translations
+        if: always()
+        run: cargo xtask i18n
+      - name: Agent chat, updater and i18n tests (ui-egui)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-ui-egui --lib -- agent_chat update i18n 2>&1 | tail -n 80
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # As upstream's pull request tests: the packages the change reaches (scripts/ci/affected.py),
+      # graded against tests/KNOWN_FAILING_TESTS.
+      - name: Tests (the affected packages, the pull request's default filter)
+        run: |
+          printf '%s\0' assets/locales/pending/agent-chat-snap.json crates/ui-egui/src/agent_chat/panel.rs \
+            crates/ui-egui/src/agent_chat/settings.rs crates/ui-egui/src/update.rs > "$RUNNER_TEMP/paths"
+          python3 -I scripts/ci/affected.py --paths "$RUNNER_TEMP/paths" | tee "$RUNNER_TEMP/affected"
+          scope=(--workspace)
+          if [ "$(sed -n 's/^full=//p' "$RUNNER_TEMP/affected")" != true ]; then
+            scope=(); for p in $(sed -n 's/^packages=//p' "$RUNNER_TEMP/affected"); do scope+=(-p "$p"); done
+          fi
+          junit=target/nextest/ci/junit.xml
+          rm -f "$junit"
+          status=0
+          cargo nextest run "${scope[@]}" --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \
+            -E 'default() - (package(solidcraft-gpu) & test(/^path::/)) - test(=action_matrix_sample)' || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then exit "$status"; fi
+          cargo xtask known-failing --junit "$junit"
+  screenshots:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [main, pr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.build == 'main' && env.MAIN_SHA || github.sha }}
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth x11-apps imagemagick libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: The agent chat and Preferences with no agent, as the Snap starts SolidCraft
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          mkdir -p shots
+          cat > "$RUNNER_TEMP/shots.py" <<'PY'
+          import json, os, secrets, socket, subprocess, sys, time
+          tmp, build = os.environ["RUNNER_TEMP"], os.environ["BUILD"]
+          port = 18848
+          token = secrets.token_hex(32)
+          # What snapd sets for a strictly confined snap (a locally installed one: revision x1).
+          snap = {"SNAP": "/snap/solidcraft/x1", "SNAP_NAME": "solidcraft", "SNAP_REVISION": "x1"}
+          env = dict(os.environ, SOLIDCRAFT_CONTROL_TOKEN=token, SOLIDCRAFT_CONTROL_DIR=os.path.join(tmp, "control"), **snap)
+          log = open(os.path.join(tmp, "app.log"), "wb")
+          app = subprocess.Popen(["xvfb-run", "-n", "99", "-s", "-screen 0 1400x900x24 -nolisten tcp", "target/ci/solidcraft", "--control", str(port)],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          deadline = time.monotonic() + 120
+          while True:
+              try:
+                  sock = socket.create_connection(("127.0.0.1", port), timeout=120)
+                  break
+              except OSError:
+                  if app.poll() is not None or time.monotonic() > deadline:
+                      sys.exit("the app never listened")
+                  time.sleep(0.3)
+          io = sock.makefile("rw", encoding="utf-8")
+          n = 0
+          def call(method, params=None, ok=True):
+              global n
+              n += 1
+              req = {"id": n, "method": method, "params": params or {}}
+              if n == 1:
+                  req["token"] = token
+              io.write(json.dumps(req) + "\n")
+              io.flush()
+              reply = json.loads(io.readline())
+              if ok and reply.get("ok") is not True:
+                  sys.exit(f"{method} {params} failed: {reply}")
+              return reply
+          def shot(name):
+              time.sleep(1.5)
+              path = os.path.abspath(f"shots/{build}-{name}.png")
+              r = call("ui.screenshot", {"path": path}, ok=False)
+              if r.get("ok") is not True or not os.path.exists(path):
+                  print(f"ui.screenshot failed ({r}), taking the X screen instead", flush=True)
+                  subprocess.run(["import", "-display", ":99", "-window", "root", path], check=True)
+              print(f"shot {path}", flush=True)
+          def chat(params=None):
+              return call("ui.agent_chat", params or {})["result"]
+
+          print(f"[{build}] SolidCraft started with {json.dumps(snap)}", flush=True)
+          call("ui.resize", {"width": 1400, "height": 900})
+          call("ui.home", {"open": False}, ok=False)
+          time.sleep(1.0)
+          chat({"open": True, "width": 560, "picker": True, "refresh": True})
+          end = time.monotonic() + 60
+          s = chat()
+          while s.get("detection") is None and time.monotonic() < end:
+              time.sleep(0.3)
+              s = chat()
+          d = s.get("detection") or {}
+          print(f"[{build}] agents: {json.dumps(s.get('agents'))}", flush=True)
+          print(f"[{build}] detection: found {len(d.get('found', []))}, missing {[m['id'] for m in d.get('missing', [])]}", flush=True)
+          shot("agent-chat")
+          # Connect with no agent: the chat says why in a notice.
+          chat({"connect": True})
+          time.sleep(1.0)
+          notices = [i["notice"] for i in chat()["items"] if "notice" in i]
+          print(f"[{build}] Connect with no agent: {json.dumps(notices, ensure_ascii=False)}", flush=True)
+          shot("agent-chat-connect")
+          chat({"open": False})
+          call("ui.prefs", {"open": "Assistant"})
+          shot("preferences-assistant")
+          call("ui.prefs", {"button": "cancel"}, ok=False)
+          call("app.quit", {"force": True}, ok=False)
+          app.wait(timeout=60)
+          PY
+          set -o pipefail
+          python3 -I "$RUNNER_TEMP/shots.py" | tee "shots/transcript-${BUILD}.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots-${{ matrix.build }}
+          path: |
+            shots/
+            ${{ runner.temp }}/app.log
