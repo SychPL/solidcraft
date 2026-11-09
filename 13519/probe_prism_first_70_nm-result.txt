@@ -1,0 +1,10 @@
+body tolerance 1e-5; 25 edges; 130 triangles; 0 faces refused
+  edge    1  tolerance 1.400e-4  faces [1, 5]
+  edge    5  tolerance 1.400e-4  faces [3, 5]
+  edge    9  tolerance 1.400e-4  faces [4, 5]
+  edge    0  tolerance 1.000e-5  faces [0, 5]
+  edge    2  tolerance 1.000e-5  faces [2, 1]
+  edge    3  tolerance 1.000e-5  faces [2, 0]
+  edge    4  tolerance 1.000e-5  faces [3, 0]
+  edge    6  tolerance 1.000e-5  faces [3, 1]
+wrote pics/p_prism_first_70nm/v-35_30/03-result.png and pics/p_prism_first_70nm/v-35_30/03-result.json
