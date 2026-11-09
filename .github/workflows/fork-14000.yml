@@ -32,7 +32,7 @@ jobs:
           echo "diag: $diag"
           for f in dump/*/*.smb; do
             c=$(basename "$(dirname "$f")"); s=$(basename "$f" .smb)
-            case "$c" in *_sc_fixes) continue;; esac
+            case "$c" in t[0-9]*|*_sc_fixes) continue;; esac
             for v in "-35,30" "-60,20" "-90,0" "0,89"; do
               d="pics/$c/v${v/,/_}"
               mkdir -p "$d"
