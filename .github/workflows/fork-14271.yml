@@ -14,18 +14,26 @@ env:
 jobs:
   xtask-ci:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
+    env:
+      CARGO_BUILD_JOBS: "2"
     steps:
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: scripts/ci/build-jobs.sh || true
       - name: system packages the GUI crates link
         run: sudo apt-get update -q && sudo apt-get install -y -q libxkbcommon-dev libwayland-dev libgtk-3-dev libudev-dev pkg-config || true
       - run: rustup target add wasm32-unknown-unknown
       - name: cargo xtask ci
         run: cargo xtask ci
+      - if: always()
+        run: df -h / && free -h
   tests:
+    if: contains(github.event.head_commit.message, '[all]')
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -47,6 +55,7 @@ jobs:
           cargo test --profile ci -p solidcraft-engine --lib -- a_joint_drive_keeps_a_combined_mirror_inside_the_part_it_moves 2>&1 | tail -30 || true
           git checkout crates/doc/src/eval.rs
   timings:
+    if: contains(github.event.head_commit.message, '[all]')
     strategy:
       fail-fast: false
       matrix:
