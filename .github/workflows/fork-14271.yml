@@ -1,0 +1,72 @@
+# Fork-only (never upstream): checks for the #14271 fix. `cargo xtask ci`, the mirror and joint tests, the new
+# test against main's eval.rs (it must fail there), and the report's script timed on solidcraft-cli built from
+# main and from this branch.
+name: fork-14271
+on:
+  push:
+    branches: [fork-ci-14271]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  xtask-ci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: scripts/ci/build-jobs.sh || true
+      - name: system packages the GUI crates link
+        run: sudo apt-get update -q && sudo apt-get install -y -q libxkbcommon-dev libwayland-dev libgtk-3-dev libudev-dev pkg-config || true
+      - run: rustup target add wasm32-unknown-unknown
+      - name: cargo xtask ci
+        run: cargo xtask ci
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: scripts/ci/build-jobs.sh || true
+      - name: system packages
+        run: sudo apt-get update -q && sudo apt-get install -y -q libxkbcommon-dev libwayland-dev libgtk-3-dev libudev-dev pkg-config || true
+      - name: engine mirror and joint tests
+        run: set -o pipefail; cargo test --profile ci -p solidcraft-engine --lib -- mirror_placed joint pose --skip dragging_a_mirrored_part_meshes_its_copies_once 2>&1 | tail -60
+      - name: doc library tests
+        run: set -o pipefail; cargo test --profile ci -p solidcraft-doc --lib 2>&1 | tail -30
+      - name: the new test against main's eval.rs (must fail)
+        run: |
+          git fetch -q https://github.com/tangency-labs/solidcraft.git main
+          git show FETCH_HEAD:crates/doc/src/eval.rs > crates/doc/src/eval.rs
+          git diff --stat
+          cargo test --profile ci -p solidcraft-engine --lib -- a_joint_drive_keeps_a_combined_mirror_inside_the_part_it_moves 2>&1 | tail -30 || true
+          git checkout crates/doc/src/eval.rs
+  timings:
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [main, branch]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: main's eval.rs for the main side
+        if: matrix.side == 'main'
+        run: |
+          git fetch -q https://github.com/tangency-labs/solidcraft.git main
+          git show FETCH_HEAD:crates/doc/src/eval.rs > crates/doc/src/eval.rs
+          git diff --stat
+      - run: scripts/ci/build-jobs.sh || true
+      - run: cargo build --release -p solidcraft-cli
+      - name: the report's script, timed
+        run: |
+          ./target/release/solidcraft-cli run .github/fork-14271/with_placements.json --timings 2>&1 | tail -40
+          echo "=== profile of the same run"
+          ./target/release/solidcraft-cli run .github/fork-14271/with_placements.json --profile 2>&1 | grep -E 'Mirror|Hole|Feature' | head -30 || true
