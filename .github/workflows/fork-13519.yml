@@ -37,6 +37,11 @@ jobs:
               mkdir -p "$d"
               "$diag" "$f" --out "$d" --view "$v" > "$d/$s.txt" 2>&1 || echo "FAILED $f $v"
             done
+            for v in "-35,30" "-35,-30"; do
+              d="pics/$c/t${v/,/_}"
+              mkdir -p "$d"
+              "$diag" "$f" --out "$d" --view "$v" --edges-above 1.5e-5 > "$d/$s.txt" 2>&1 || echo "FAILED $f $v tol"
+            done
             echo "== $c/$s"; head -3 "pics/$c/v-35_30/$s.txt"
           done
       - uses: actions/upload-artifact@v4
@@ -47,6 +52,7 @@ jobs:
             dump
             pics
   replay:
+    if: contains(github.event.head_commit.message, '[replay]')
     strategy:
       fail-fast: false
       matrix:
