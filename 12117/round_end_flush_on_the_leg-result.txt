@@ -1,0 +1,10 @@
+body tolerance 1e-5; 18 edges; 808 triangles; 0 faces refused
+  edge    0  tolerance 1.000e-5  faces [0, 4]
+  edge    1  tolerance 1.000e-5  faces [0, 5]
+  edge    2  tolerance 1.000e-5  faces [0, 1]
+  edge    3  tolerance 1.000e-5  faces [0, 6]
+  edge    4  tolerance 1.000e-5  faces [2, 3]
+  edge    5  tolerance 1.000e-5  faces [2, 5]
+  edge    6  tolerance 1.000e-5  faces [2, 1]
+  edge    7  tolerance 1.000e-5  faces [2, 6]
+wrote pics/round_end_flush_on_the_leg/v-35_-30/03-result.png and pics/round_end_flush_on_the_leg/v-35_-30/03-result.json
