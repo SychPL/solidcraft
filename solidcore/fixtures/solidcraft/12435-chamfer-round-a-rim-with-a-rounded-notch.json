@@ -1,0 +1,374 @@
+{
+ "issue": "https://github.com/tangency-labs/solidcraft/issues/12435",
+ "test": "none: a regression between SolidCraft 0.30.1 (truck) and 0.40.0-rc.2 (solidcore); the report's script",
+ "summary": "TODO",
+ "cases": [
+  {
+   "name": "plain_cylinder_rim",
+   "note": "Control: the same chamfer, 1 mm, on the top rim of the cylinder without the notch, one circular edge.",
+   "steps": [
+    {
+     "op": "cylinder",
+     "id": "blank",
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "radius": 35.0,
+     "height": 10.0
+    },
+    {
+     "op": "chamfer",
+     "id": "result",
+     "body": "blank",
+     "edges": [
+      [
+       -35.0,
+       0.0,
+       10.0
+      ]
+     ],
+     "distance": 1.0
+    }
+   ],
+   "expect": {
+    "lumps": 1,
+    "manifold": true,
+    "volume": {
+     "value": 38375.601461151,
+     "tol": 0.001,
+     "formula": "pi*35^2*10 - 0.5*1^2*2*pi*(35 - 1/3) (Pappus: the chamfer's triangle, centroid 1/3 in from the wall); tol 0.001 mm^3"
+    }
+   }
+  },
+  {
+   "name": "rounded_notch",
+   "note": "Control: the notched cylinder with the notch's two vertical edges rounded R5, before the chamfer.",
+   "steps": [
+    {
+     "op": "cylinder",
+     "id": "blank",
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "radius": 35.0,
+     "height": 10.0
+    },
+    {
+     "op": "cylinder",
+     "id": "scallop",
+     "origin": [
+      36.5,
+      0.0,
+      -1.0
+     ],
+     "radius": 7.25,
+     "height": 12.0
+    },
+    {
+     "op": "difference",
+     "id": "notched",
+     "a": "blank",
+     "b": "scallop"
+    },
+    {
+     "op": "fillet",
+     "id": "result",
+     "body": "notched",
+     "edges": [
+      [
+       34.31078767123287,
+       6.911573582012581,
+       5.0
+      ],
+      [
+       34.31078767123287,
+       -6.911573582012581,
+       5.0
+      ]
+     ],
+     "radius": 5.0
+    }
+   ],
+   "expect": {
+    "lumps": 1,
+    "manifold": true,
+    "volume": {
+     "value": 37859.371277705,
+     "tol": 0.001,
+     "formula": "10 * the area inside the rim (Green's theorem over its four arcs: R35 about the origin, R5 about (28.523116, +-9.296872), R7.25 about (36.5, 0)); tol 0.001 mm^3"
+    }
+   }
+  },
+  {
+   "name": "rounded_notch_rim_chamfer_1",
+   "note": "The report's chamfer, 1 mm, on the whole tangent chain of the top rim (the four edges, as SolidCraft's tangent propagation picks them from one).",
+   "steps": [
+    {
+     "op": "cylinder",
+     "id": "blank",
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "radius": 35.0,
+     "height": 10.0
+    },
+    {
+     "op": "cylinder",
+     "id": "scallop",
+     "origin": [
+      36.5,
+      0.0,
+      -1.0
+     ],
+     "radius": 7.25,
+     "height": 12.0
+    },
+    {
+     "op": "difference",
+     "id": "notched",
+     "a": "blank",
+     "b": "scallop"
+    },
+    {
+     "op": "fillet",
+     "id": "lobe",
+     "body": "notched",
+     "edges": [
+      [
+       34.31078767123287,
+       6.911573582012581,
+       5.0
+      ],
+      [
+       34.31078767123287,
+       -6.911573582012581,
+       5.0
+      ]
+     ],
+     "radius": 5.0
+    },
+    {
+     "op": "chamfer",
+     "id": "result",
+     "body": "lobe",
+     "edges": [
+      [
+       -35.0,
+       0.0,
+       10.0
+      ],
+      [
+       33.337555489496104,
+       7.947362210383247,
+       10.0
+      ],
+      [
+       29.25,
+       0.0,
+       10.0
+      ],
+      [
+       33.337555489496104,
+       -7.947362210383247,
+       10.0
+      ]
+     ],
+     "distance": 1.0
+    }
+   ],
+   "expect": {
+    "lumps": 1,
+    "manifold": true,
+    "volume": {
+     "value": 37749.359827568,
+     "tol": 0.001,
+     "formula": "the rounded notch's volume - 110.011450137: 0.5*d^2*sum(angle_i*(r_i -+ d/3)) over the rim's arcs (Pappus, minus on the three convex arcs, plus on the concave notch), d = 1; tol 0.001 mm^3"
+    }
+   }
+  },
+  {
+   "name": "rounded_notch_rim_chamfer_0_5",
+   "note": "The report's chamfer, 0.5 mm, on the whole tangent chain of the top rim (the four edges, as SolidCraft's tangent propagation picks them from one).",
+   "steps": [
+    {
+     "op": "cylinder",
+     "id": "blank",
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "radius": 35.0,
+     "height": 10.0
+    },
+    {
+     "op": "cylinder",
+     "id": "scallop",
+     "origin": [
+      36.5,
+      0.0,
+      -1.0
+     ],
+     "radius": 7.25,
+     "height": 12.0
+    },
+    {
+     "op": "difference",
+     "id": "notched",
+     "a": "blank",
+     "b": "scallop"
+    },
+    {
+     "op": "fillet",
+     "id": "lobe",
+     "body": "notched",
+     "edges": [
+      [
+       34.31078767123287,
+       6.911573582012581,
+       5.0
+      ],
+      [
+       34.31078767123287,
+       -6.911573582012581,
+       5.0
+      ]
+     ],
+     "radius": 5.0
+    },
+    {
+     "op": "chamfer",
+     "id": "result",
+     "body": "lobe",
+     "edges": [
+      [
+       -35.0,
+       0.0,
+       10.0
+      ],
+      [
+       33.337555489496104,
+       7.947362210383247,
+       10.0
+      ],
+      [
+       29.25,
+       0.0,
+       10.0
+      ],
+      [
+       33.337555489496104,
+       -7.947362210383247,
+       10.0
+      ]
+     ],
+     "distance": 0.5
+    }
+   ],
+   "expect": {
+    "lumps": 1,
+    "manifold": true,
+    "volume": {
+     "value": 37831.737515477,
+     "tol": 0.001,
+     "formula": "the rounded notch's volume - 27.633762228: 0.5*d^2*sum(angle_i*(r_i -+ d/3)) over the rim's arcs (Pappus, minus on the three convex arcs, plus on the concave notch), d = 0.5; tol 0.001 mm^3"
+    }
+   }
+  },
+  {
+   "name": "rounded_notch_rim_chamfer_0_2",
+   "note": "The report's chamfer, 0.2 mm, on the whole tangent chain of the top rim (the four edges, as SolidCraft's tangent propagation picks them from one).",
+   "steps": [
+    {
+     "op": "cylinder",
+     "id": "blank",
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "radius": 35.0,
+     "height": 10.0
+    },
+    {
+     "op": "cylinder",
+     "id": "scallop",
+     "origin": [
+      36.5,
+      0.0,
+      -1.0
+     ],
+     "radius": 7.25,
+     "height": 12.0
+    },
+    {
+     "op": "difference",
+     "id": "notched",
+     "a": "blank",
+     "b": "scallop"
+    },
+    {
+     "op": "fillet",
+     "id": "lobe",
+     "body": "notched",
+     "edges": [
+      [
+       34.31078767123287,
+       6.911573582012581,
+       5.0
+      ],
+      [
+       34.31078767123287,
+       -6.911573582012581,
+       5.0
+      ]
+     ],
+     "radius": 5.0
+    },
+    {
+     "op": "chamfer",
+     "id": "result",
+     "body": "lobe",
+     "edges": [
+      [
+       -35.0,
+       0.0,
+       10.0
+      ],
+      [
+       33.337555489496104,
+       7.947362210383247,
+       10.0
+      ],
+      [
+       29.25,
+       0.0,
+       10.0
+      ],
+      [
+       33.337555489496104,
+       -7.947362210383247,
+       10.0
+      ]
+     ],
+     "distance": 0.2
+    }
+   ],
+   "expect": {
+    "lumps": 1,
+    "manifold": true,
+    "volume": {
+     "value": 37854.937309378,
+     "tol": 0.001,
+     "formula": "the rounded notch's volume - 4.433968327: 0.5*d^2*sum(angle_i*(r_i -+ d/3)) over the rim's arcs (Pappus, minus on the three convex arcs, plus on the concave notch), d = 0.2; tol 0.001 mm^3"
+    }
+   }
+  }
+ ]
+}
