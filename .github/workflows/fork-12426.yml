@@ -1,0 +1,235 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#14350 (#12426) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-12426
+on:
+  push:
+    branches: [fork-ci-12426]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  MAIN_SHA: 5aff21fea01cd0733a7127de14e47c94d66936dc
+  TEST_ONLY_SHA: 6041176caa0b31483874de23265413a5787bf0ed
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask layers
+          cargo xtask lists
+          cargo xtask mesh-decisions
+      - name: Joint tests (engine)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-engine --lib -- cmd::joints:: 2>&1 | grep -E '^(test result|failures|---- |test .*(FAILED|angle))'
+  before:
+    # The regression test alone on main (main + the test, no fix): it must fail.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TEST_ONLY_SHA }}
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The new test on main, without the fix
+        run: |
+          set +e
+          cargo test --profile ci --locked -p solidcraft-engine --lib -- an_angle_relation_on_a_hinge_keeps_its_side_and_carries_on_past_180 > "$RUNNER_TEMP/before.txt" 2>&1
+          grep -E "^(test |test result|thread|.*turned)" "$RUNNER_TEMP/before.txt"
+          if grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/before.txt"; then echo "the test passed without the fix: it does not reproduce #12426"; exit 1; fi
+          if grep -q "1 failed" "$RUNNER_TEMP/before.txt"; then echo "as expected: the test fails on main without the fix"; exit 0; fi
+          tail -n 40 "$RUNNER_TEMP/before.txt"; exit 1
+  review-before:
+    # The review's test on the previous head be9c52bad (no suppressed check): it must fail.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 649a1a5f8d58ee93b3f916f60db0f9f4b9c98b0f
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The review's test without its fix
+        run: |
+          set +e
+          cargo test --profile ci --locked -p solidcraft-engine --lib -- an_angle_edit_while_the_joint_is_suppressed_starts_from_where_the_part_is > "$RUNNER_TEMP/before.txt" 2>&1
+          grep -E "^(test |test result|thread|together)" "$RUNNER_TEMP/before.txt"
+          if grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/before.txt"; then echo "the test passed without the fix"; exit 1; fi
+          if grep -q "1 failed" "$RUNNER_TEMP/before.txt"; then echo "as expected: the test fails on the previous head"; exit 0; fi
+          tail -n 40 "$RUNNER_TEMP/before.txt"; exit 1
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # As upstream's pull request tests: the packages the change reaches (scripts/ci/affected.py),
+      # graded against tests/KNOWN_FAILING_TESTS.
+      - name: Tests (the affected packages, the pull request's default filter)
+        run: |
+          printf '%s\0' crates/engine/src/cmd/joints.rs crates/engine/src/cmd/joints_relations_tests.rs > "$RUNNER_TEMP/paths"
+          python3 -I scripts/ci/affected.py --paths "$RUNNER_TEMP/paths" | tee "$RUNNER_TEMP/affected"
+          scope=(--workspace)
+          if [ "$(sed -n 's/^full=//p' "$RUNNER_TEMP/affected")" != true ]; then
+            scope=(); for p in $(sed -n 's/^packages=//p' "$RUNNER_TEMP/affected"); do scope+=(-p "$p"); done
+          fi
+          junit=target/nextest/ci/junit.xml
+          rm -f "$junit"
+          status=0
+          cargo nextest run "${scope[@]}" --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \
+            -E 'default() - (package(solidcraft-gpu) & test(/^path::/)) - test(=action_matrix_sample)' || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then exit "$status"; fi
+          cargo xtask known-failing --junit "$junit"
+  screenshots:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [main, pr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.build == 'main' && env.MAIN_SHA || github.sha }}
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth x11-apps imagemagick libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: A hinged leaf whose Angle joint goes 120, 170, 190 and 260 degrees, seen along the hinge
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          mkdir -p shots
+          cat > "$RUNNER_TEMP/shots.py" <<'PY'
+          import json, math, os, secrets, socket, subprocess, sys, time
+          tmp, build = os.environ["RUNNER_TEMP"], os.environ["BUILD"]
+          port = 18850
+          token = secrets.token_hex(32)
+          env = dict(os.environ, SOLIDCRAFT_CONTROL_TOKEN=token, SOLIDCRAFT_CONTROL_DIR=os.path.join(tmp, "control"))
+          log = open(os.path.join(tmp, "app.log"), "wb")
+          app = subprocess.Popen(["xvfb-run", "-n", "99", "-s", "-screen 0 1400x900x24 -nolisten tcp", "target/ci/solidcraft", "--control", str(port)],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          deadline = time.monotonic() + 120
+          while True:
+              try:
+                  sock = socket.create_connection(("127.0.0.1", port), timeout=120)
+                  break
+              except OSError:
+                  if app.poll() is not None or time.monotonic() > deadline:
+                      sys.exit("the app never listened")
+                  time.sleep(0.3)
+          io = sock.makefile("rw", encoding="utf-8")
+          n = 0
+          def call(method, params=None, ok=True):
+              global n
+              n += 1
+              req = {"id": n, "method": method, "params": params or {}}
+              if n == 1:
+                  req["token"] = token
+              io.write(json.dumps(req) + "\n")
+              io.flush()
+              reply = json.loads(io.readline())
+              if ok and reply.get("ok") is not True:
+                  sys.exit(f"{method} {params} failed: {reply}")
+              return reply
+          def run(command, params):
+              return call("engine.execute", {"command": command, "params": params}).get("result")
+          def hinge():
+              joints = run("joint.list", {}).get("joints", [])
+              h = next((j for j in joints if j.get("name") == "Hinge"), {})
+              return json.dumps(h.get("values"))
+          def shot(name):
+              time.sleep(1.5)
+              path = os.path.abspath(f"shots/{build}-{name}.png")
+              r = call("ui.screenshot", {"path": path}, ok=False)
+              if r.get("ok") is not True or not os.path.exists(path):
+                  print(f"ui.screenshot failed ({r}), taking the X screen instead", flush=True)
+                  subprocess.run(["import", "-display", ":99", "-window", "root", path], check=True)
+              print(f"shot {path}", flush=True)
+
+          call("ui.resize", {"width": 1400, "height": 900})
+          call("ui.home", {"open": False}, ok=False)
+          run("component.create", {"name": "Base"})
+          run("solid.box", {"length": 100, "width": 100, "height": 10, "corner": [0, 0, 0]})
+          run("component.activate", {"component": "root"})
+          run("component.create", {"name": "Leaf"})
+          run("solid.box", {"length": 100, "width": 10, "height": 60, "corner": [0, 45, 10]})
+          run("component.activate", {"component": "root"})
+          run("occurrence.ground", {"occurrence": "Base:1", "grounded": True})
+          run("joint.origin", {"name": "Top", "occurrence": "Base", "face": [50.0, 20.0, 10.0]})
+          run("joint.origin", {"name": "Side", "occurrence": "Leaf", "face": [50.0, 55.0, 40.0]})
+          run("joint.as_built", {"type": "revolute", "name": "Hinge", "a": "Base", "b": "Leaf", "at": {"occurrence": 0, "point": [0, 50, 10], "z": [1, 0, 0]}})
+          run("joint.create", {"type": "angle", "name": "Tilt", "a": "Top", "b": "Side", "angle": "120 deg"})
+          call("ui.view", {"view": "right"})
+          call("ui.view", {"view": "fit"})
+          print(f"[{build}] Angle joint 120 deg: hinge values {hinge()}", flush=True)
+          shot("120")
+          for angle in [170, 190, 260]:
+              run("joint.edit", {"joint": "Tilt", "angle": f"{angle} deg"})
+              print(f"[{build}] Angle joint {angle} deg: hinge values {hinge()} (expected a turn of {angle - 90} deg)", flush=True)
+              shot(str(angle))
+          call("app.quit", {"force": True}, ok=False)
+          app.wait(timeout=60)
+          PY
+          set -o pipefail
+          python3 -I "$RUNNER_TEMP/shots.py" | tee "shots/transcript-${BUILD}.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots-${{ matrix.build }}
+          path: |
+            shots/
+            ${{ runner.temp }}/app.log
