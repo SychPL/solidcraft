@@ -3,16 +3,17 @@
 name: fork-13336
 on:
   push:
-    branches: [fork-ci-13336]
+    branches: [fork-ci-13336-cmp]
   workflow_dispatch:
 permissions:
   contents: read
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  MAIN_SHA: 6c85bb76f6d4e93bb97f5e4bf58d1310778c23b7
+  MAIN_SHA: 8005413fca97cff698ecf20a57c7661a54648391
 jobs:
   quick:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -39,6 +40,7 @@ jobs:
           cargo test --profile ci --locked -p solidcraft-mcp-server 2>&1 | grep -E '^(test |running)'
           cargo test --profile ci --locked -p solidcraft-mcp 2>&1 | grep -E '^(running|test result|failures|---- )'
   clippy:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -49,6 +51,7 @@ jobs:
           components: clippy
       - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
   wasm:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -58,6 +61,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - run: cargo xtask wasm
   tests:
+    if: false
     strategy:
       fail-fast: false
       matrix:
