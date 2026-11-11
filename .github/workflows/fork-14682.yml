@@ -1,0 +1,217 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#14885 (#14682) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-14682
+on:
+  push:
+    branches: [fork-ci-14682]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  MAIN_SHA: d7920f71cdfa92f3c9c6df31694163b5f8dadf2b
+  TEST_ONLY_SHA: f2b3e314c4636c10fad1bfe6cd1eea3d6494d961
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask layers
+          cargo xtask lists
+          cargo xtask mesh-decisions
+      - name: Joint tests (engine)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-engine --lib -- cmd::joints:: 2>&1 | grep -E '^(test result|failures|---- |test .*(FAILED|reach|contact))'
+  before:
+    # The regression test alone on main (main + the test, no fix): it must fail.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TEST_ONLY_SHA }}
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The new test on main, without the fix
+        run: |
+          set +e
+          cargo test --profile ci --locked -p solidcraft-engine --lib -- a_reach_stops_where_a_contact_set_touches > "$RUNNER_TEMP/before.txt" 2>&1
+          grep -E "^(test |test result|thread|.*(B stops|stopped_by|reached))" "$RUNNER_TEMP/before.txt"
+          if grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/before.txt"; then echo "the test passed without the fix: it does not reproduce #14682"; exit 1; fi
+          if grep -q "1 failed" "$RUNNER_TEMP/before.txt"; then echo "as expected: the test fails on main without the fix"; exit 0; fi
+          tail -n 40 "$RUNNER_TEMP/before.txt"; exit 1
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # As upstream's pull request tests: the packages the change reaches (scripts/ci/affected.py),
+      # graded against tests/KNOWN_FAILING_TESTS.
+      - name: Tests (the affected packages, the pull request's default filter)
+        run: |
+          printf '%s\0' crates/engine/src/cmd/joints.rs crates/engine/src/cmd/joints_reach_tests.rs crates/engine/src/cmd/motion.rs \
+            crates/engine/src/schema/joints.rs skills/solidcraft-mechanisms/SKILL.md > "$RUNNER_TEMP/paths"
+          python3 -I scripts/ci/affected.py --paths "$RUNNER_TEMP/paths" | tee "$RUNNER_TEMP/affected"
+          scope=(--workspace)
+          if [ "$(sed -n 's/^full=//p' "$RUNNER_TEMP/affected")" != true ]; then
+            scope=(); for p in $(sed -n 's/^packages=//p' "$RUNNER_TEMP/affected"); do scope+=(-p "$p"); done
+          fi
+          junit=target/nextest/ci/junit.xml
+          rm -f "$junit"
+          status=0
+          cargo nextest run "${scope[@]}" --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \
+            -E 'default() - (package(solidcraft-gpu) & test(/^path::/)) - test(=action_matrix_sample)' || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then exit "$status"; fi
+          cargo xtask known-failing --junit "$junit"
+  screenshots:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [main, pr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.build == 'main' && env.MAIN_SHA || github.sha }}
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth x11-apps imagemagick libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: Block B on a rail dragged 25 mm toward block A, both in one contact set
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          mkdir -p shots
+          cat > "$RUNNER_TEMP/shots.py" <<'PY'
+          import json, os, secrets, socket, subprocess, sys, time
+          tmp, build = os.environ["RUNNER_TEMP"], os.environ["BUILD"]
+          port = 18851
+          token = secrets.token_hex(32)
+          env = dict(os.environ, SOLIDCRAFT_CONTROL_TOKEN=token, SOLIDCRAFT_CONTROL_DIR=os.path.join(tmp, "control"))
+          log = open(os.path.join(tmp, "app.log"), "wb")
+          app = subprocess.Popen(["xvfb-run", "-n", "99", "-s", "-screen 0 1400x900x24 -nolisten tcp", "target/ci/solidcraft", "--control", str(port)],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          deadline = time.monotonic() + 120
+          while True:
+              try:
+                  sock = socket.create_connection(("127.0.0.1", port), timeout=120)
+                  break
+              except OSError:
+                  if app.poll() is not None or time.monotonic() > deadline:
+                      sys.exit("the app never listened")
+                  time.sleep(0.3)
+          io = sock.makefile("rw", encoding="utf-8")
+          n = 0
+          def call(method, params=None, ok=True):
+              global n
+              n += 1
+              req = {"id": n, "method": method, "params": params or {}}
+              if n == 1:
+                  req["token"] = token
+              io.write(json.dumps(req) + "\n")
+              io.flush()
+              reply = json.loads(io.readline())
+              if ok and reply.get("ok") is not True:
+                  sys.exit(f"{method} {params} failed: {reply}")
+              return reply
+          def run(command, params):
+              return call("engine.execute", {"command": command, "params": params}).get("result")
+          def rail():
+              joints = run("joint.list", {"quiet": True}).get("joints", [])
+              j = next((j for j in joints if j.get("name") == "Rail"), {})
+              return json.dumps(j.get("values"))
+          def shot(name):
+              time.sleep(1.5)
+              path = os.path.abspath(f"shots/{build}-{name}.png")
+              r = call("ui.screenshot", {"path": path}, ok=False)
+              if r.get("ok") is not True or not os.path.exists(path):
+                  print(f"ui.screenshot failed ({r}), taking the X screen instead", flush=True)
+                  subprocess.run(["import", "-display", ":99", "-window", "root", path], check=True)
+              print(f"shot {path}", flush=True)
+
+          call("ui.resize", {"width": 1400, "height": 900})
+          call("ui.home", {"open": False}, ok=False)
+          for name, x in [("A", 0), ("B", 20)]:
+              run("component.activate", {"component": 0})
+              run("component.create", {"name": name})
+              run("solid.box", {"length": 10, "width": 10, "height": 10, "corner": [x, 0, 0]})
+          run("component.activate", {"component": 0})
+          run("occurrence.ground", {"occurrence": "A:1", "grounded": True})
+          run("joint.create", {"type": "slider", "a": {"face": [10, 5, 5]}, "b": {"face": [20, 5, 5]}, "name": "Rail"})
+          run("joint.drive", {"joint": "Rail", "value": 10})
+          run("contact.create", {"occurrences": ["A", "B"]})
+          run("contact.enable_sets", {"enabled": True})
+          call("ui.view", {"view": "front"})
+          call("ui.view", {"view": "fit"})
+          print(f"[{build}] before the drag: Rail {rail()}", flush=True)
+          shot("before")
+          r = run("joint.reach", {"occurrence": "B:1", "at": [25, 5, 5], "point": [0, 5, 5]})
+          print(f"[{build}] joint.reach B 25 mm toward A: reached {r.get('reached')}, stopped_by_contact {json.dumps(r.get('stopped_by_contact'))}, Rail {rail()}", flush=True)
+          print(f"[{build}] contact.check: {json.dumps(run('contact.check', {}).get('collisions'))}", flush=True)
+          shot("after")
+          call("app.quit", {"force": True}, ok=False)
+          app.wait(timeout=60)
+          PY
+          set -o pipefail
+          python3 -I "$RUNNER_TEMP/shots.py" | tee "shots/transcript-${BUILD}.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots-${{ matrix.build }}
+          path: |
+            shots/
+            ${{ runner.temp }}/app.log
