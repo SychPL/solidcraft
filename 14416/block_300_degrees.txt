@@ -1,0 +1,10 @@
+body tolerance 1e-5; 12 edges; 874 triangles; 0 faces refused
+  edge    0  tolerance 1.000e-5  faces [0, 3]
+  edge    1  tolerance 1.000e-5  faces [0, 4]
+  edge    2  tolerance 1.000e-5  faces [0, 5]
+  edge    3  tolerance 1.000e-5  faces [0, 2]
+  edge    4  tolerance 1.000e-5  faces [1, 2]
+  edge    5  tolerance 1.000e-5  faces [1, 3]
+  edge    6  tolerance 1.000e-5  faces [1, 4]
+  edge    7  tolerance 1.000e-5  faces [1, 5]
+wrote pics/round_0_4_at_300_degrees/v-35_-30/01-block.png and pics/round_0_4_at_300_degrees/v-35_-30/01-block.json
