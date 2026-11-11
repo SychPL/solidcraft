@@ -1,0 +1,120 @@
+# Fork-only (never upstream): the `valid` case expectation and the SolidCraft #14415, #14417 and #14418 cases:
+# solidcore's fmt and clippy on goldens, the goldens unit tests, the cases (bodies dumped and drawn), and a replay of
+# #14417's and #14418's scripts on solidcraft-cli built from main, v0.40.0-rc.3 and v0.30.1.
+name: fork-valid
+on:
+  push:
+    branches: [fork-ci-valid]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  cases:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: fmt (solidcore)
+        working-directory: solidcore
+        run: cargo fmt --all -- --check
+      - name: clippy (goldens)
+        working-directory: solidcore
+        run: cargo clippy --profile goldens -p goldens --all-targets -- -D warnings
+      - name: goldens unit tests (solidcraft)
+        working-directory: solidcore
+        run: cargo test --profile goldens -p goldens --lib solidcraft
+      - name: the cases, each step's body written as .smb
+        working-directory: solidcore
+        run: SOLIDCRAFT_DUMP="$PWD/../dump" cargo run --profile goldens -p goldens -- --solidcraft-cases '1441[578]-*' --no-report
+      - name: build solidcore-diag
+        working-directory: solidcore
+        run: cargo build --release -p diagnostics
+      - name: draw every dumped body
+        run: |
+          set -u
+          diag=$(ls solidcore/bin/release/solidcore-diag solidcore/target/release/solidcore-diag 2>/dev/null | head -1)
+          for f in dump/*/*.smb; do
+            c=$(basename "$(dirname "$f")"); s=$(basename "$f" .smb)
+            for v in "-35,-30" "35,-30" "0,0"; do
+              d="pics/$c/v${v/,/_}"
+              mkdir -p "$d"
+              "$diag" "$f" --out "$d" --view "$v" > "$d/$s.txt" 2>&1 || echo "FAILED $f $v"
+            done
+            d="pics/$c/t-35_-30"; mkdir -p "$d"
+            "$diag" "$f" --out "$d" --view "-35,-30" --edges-above 1.5e-5 > "$d/$s.txt" 2>&1 || echo "FAILED $f tol"
+            echo "== $c/$s"; head -1 "pics/$c/v-35_-30/$s.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-valid
+          path: |
+            dump
+            pics
+  replay:
+    if: contains(github.event.head_commit.message, '[replay]')
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [main, v0.40.0-rc.3, v0.30.1]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: tangency-labs/solidcraft
+          ref: ${{ matrix.ref }}
+      - run: scripts/ci/build-jobs.sh || true
+      - run: git log --oneline -1
+      - run: cargo build --release -p solidcraft-cli
+      - name: replay the reports' scripts
+        run: |
+          mkdir -p replay
+          t17() {
+            cat > replay/t17_$1.json <<JSON
+          {"commands":[
+           {"command":"sketch.create","params":{"plane":"XY","name":"P"}},
+           {"command":"sketch.line","params":{"points":[[10,0],[12,0],[12,1],[10,1]],"closed":true}},
+           {"command":"sketch.fillet","params":{"points":["l1.end"],"radius":$2}},
+           {"command":"sketch.finish","params":{}},
+           {"command":"solid.revolve","params":{"sketch":"P","axis":"y","angle":"90 deg","body_name":"A"}},
+           {"command":"solid.revolve","params":{"sketch":"P","axis":"y","angle":"90 deg","body_name":"B"}},
+           {"command":"solid.combine","params":{"target":"A","tools":["B"],"operation":"intersect"}}
+          ]}
+          JSON
+          }
+          t17 r003 0.03; t17 r01 0.1; t17 r001 0.01
+          t18() {
+            cat > replay/t18_$1.json <<JSON
+          {"commands":[
+           {"command":"sketch.create","params":{"plane":{"origin":[0,0,0],"x_dir":[1,0,0],"y_dir":$2},"name":"Path"}},
+           {"command":"sketch.arc.center_point","params":{"center":[0,20],"start":[0,0],"sweep":90}},
+           {"command":"sketch.finish","params":{}},
+           {"command":"sketch.create","params":{"plane":{"origin":[0,0,0],"x_dir":$3,"y_dir":$4},"name":"Prof"}},
+           {"command":"sketch.circle.center","params":{"center":[0,0],"radius":3}},
+           {"command":"sketch.finish","params":{}},
+           {"command":"solid.pipe","params":{"path_sketch":"Path","path":["a1"],"diameter":6,"body_name":"A"}},
+           {"command":"solid.sweep","params":{"sketch":"Prof","path_sketch":"Path","path":["a1"],"body_name":"B"}},
+           {"command":"solid.combine","params":{"target":"A","tools":["B"],"operation":"intersect"}}
+          ]}
+          JSON
+          }
+          t18 xz "[0,0,1]" "[0,0,1]" "[0,-1,0]"
+          t18 xy "[0,1,0]" "[0,1,0]" "[0,0,1]"
+          for f in t17_r003 t17_r01 t17_r001 t18_xz t18_xy; do
+            echo "=== $f"
+            timeout 600 ./target/release/solidcraft-cli eval replay/$f.json --json-out replay/$f.out.json > replay/$f.eval.txt 2>&1 || true
+            tail -4 replay/$f.eval.txt
+            python3 - "replay/$f.out.json" <<'PY' || true
+          import json, sys
+          try:
+              o = json.load(open(sys.argv[1], encoding="utf-8"))
+          except Exception as e:
+              print("  no eval json:", e); sys.exit()
+          for b in o.get("bodies", []):
+              print("  body", b.get("name"), "V", b.get("volume_mm3"), "F/E/V", b.get("faces"), b.get("edges"), b.get("vertices"), "closed", b.get("closed"))
+          PY
+          done

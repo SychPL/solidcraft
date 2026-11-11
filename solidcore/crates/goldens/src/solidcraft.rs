@@ -1842,6 +1842,37 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Fork-only diagnostics: with `SOLIDCRAFT_DUMP` set, writes the body step `n` made as an
+/// ASCII `.smb` file, `$SOLIDCRAFT_DUMP/<case>/<n>-<id>.smb`, for `solidcore-diag`.
+fn dump_body(k: &Kernel, case: &str, n: usize, id: &str, b: &Brep) {
+    let Ok(dir) = std::env::var("SOLIDCRAFT_DUMP") else {
+        return;
+    };
+    let store = AttributeStore::default();
+    let records = solidcore::topology::topology::NotifyRecords::new();
+    let env = solidcore::topology::brep_data_write::FromBrepEnv {
+        attributes: &store,
+        key_of: &solidcore::topology::loopuse::notify_ref,
+        records: &records,
+        curve_key: &|_: solidcore::EdgeId| ObjectKey(0),
+        uv_curve_key: &|_: solidcore::topology::EdgeuseId| ObjectKey(0),
+        surface_key: &|_: FaceId| ObjectKey(0),
+    };
+    let dir = Path::new(&dir).join(case);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("dump {case}: {e}");
+        return;
+    }
+    match solidcore::topology::api_files::write_brep_to_file(k, Some(b), &env, true) {
+        Ok(bytes) => {
+            if let Err(e) = std::fs::write(dir.join(format!("{n:02}-{id}.smb")), bytes) {
+                eprintln!("dump {case}/{id}: {e}");
+            }
+        }
+        Err(e) => eprintln!("dump {case}/{id}: {e:?}"),
+    }
+}
+
 /// Runs `case` on solidcore.
 pub fn run_rust(case: &Case) -> Run {
     run_rust_on(Kernel::default(), case)
@@ -1859,7 +1890,11 @@ pub fn run_rust_on(mut k: Kernel, case: &Case) -> Run {
     let mut bodies = BTreeMap::new();
     for (n, step) in case.steps.iter().enumerate() {
         match step_rust(&mut k, &mut bodies, step) {
-            Ok(()) => {}
+            Ok(()) => {
+                if let Some(b) = bodies.get(step.id()) {
+                    dump_body(&k, &case.name, n + 1, step.id(), b);
+                }
+            }
             // Name the failing step (1-based) and the body it writes.
             Err(Run::Error(msg)) => {
                 let refused = case.refused_by.as_ref().filter(|r| {
