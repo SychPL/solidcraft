@@ -1,0 +1,19 @@
+# Fork-only probe: which variant of the #14415 and #14417 cases fails solidcore's full check.
+name: fork-probe
+on:
+  push:
+    branches: [fork-ci-valid-probe]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe cases
+        working-directory: solidcore
+        run: cargo run --profile goldens -p goldens -- --solidcraft-cases '14415-probe-*' --no-report || echo "runner exit $?"
