@@ -1,0 +1,104 @@
+# Fork-only (never upstream): the SolidCraft #14416 solidcore case, its solidcore-diag pictures, and a replay
+# of the report's script on solidcraft-cli built from main, v0.40.0-rc.3 and v0.30.1.
+name: fork-14416
+on:
+  push:
+    branches: [fork-ci-14416]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  cases:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: goldens unit tests (solidcraft)
+        working-directory: solidcore
+        run: cargo test --profile goldens -p goldens --lib solidcraft
+      - name: the cases, each step's body written as .smb
+        working-directory: solidcore
+        run: SOLIDCRAFT_DUMP="$PWD/../dump" cargo run --profile goldens -p goldens -- --solidcraft-cases '14416-*' --no-report
+      - name: build solidcore-diag
+        working-directory: solidcore
+        run: cargo build --release -p diagnostics
+      - name: draw every dumped body
+        run: |
+          set -u
+          diag=$(ls solidcore/bin/release/solidcore-diag solidcore/target/release/solidcore-diag 2>/dev/null | head -1)
+          echo "diag: $diag"
+          for f in dump/*/*.smb; do
+            c=$(basename "$(dirname "$f")"); s=$(basename "$f" .smb)
+            case "$c" in p_*) continue;; esac
+            for v in "-35,-30" "-60,-20" "35,-30" "0,0" "0,-89"; do
+              d="pics/$c/v${v/,/_}"
+              mkdir -p "$d"
+              "$diag" "$f" --out "$d" --view "$v" > "$d/$s.txt" 2>&1 || echo "FAILED $f $v"
+            done
+            d="pics/$c/t-35_-30"; mkdir -p "$d"
+            "$diag" "$f" --out "$d" --view "-35,-30" --edges-above 1.5e-5 > "$d/$s.txt" 2>&1 || echo "FAILED $f tol"
+            echo "== $c/$s"; head -3 "pics/$c/v-35_-30/$s.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-14416
+          path: |
+            dump
+            pics
+  replay:
+    if: contains(github.event.head_commit.message, '[replay]')
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [main, v0.40.0-rc.3, v0.30.1]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: tangency-labs/solidcraft
+          ref: ${{ matrix.ref }}
+      - run: scripts/ci/build-jobs.sh || true
+      - run: git log --oneline -1
+      - run: cargo build --release -p solidcraft-cli
+      - name: replay the report's script
+        run: |
+          mkdir -p replay
+          mk() { # name angle op size pick
+            cat > replay/$1.json <<JSON
+          {"commands":[
+           {"command":"sketch.create","params":{"plane":"XY","name":"P"}},
+           {"command":"sketch.line","params":{"points":[[2,0],[10,0],[10,8],[2,8]],"closed":true}},
+           {"command":"sketch.finish","params":{}},
+           {"command":"solid.revolve","params":{"sketch":"P","axis":"y","angle":"$2 deg","body_name":"B"}},
+           {"command":"solid.$3","params":{"edges":[$5],"$( [ $3 = fillet ] && echo radius || echo distance )":$4,"body":"B"}}
+          ]}
+          JSON
+          }
+          mk r04_300 300 fillet 0.4 "[-10,8,0]"
+          mk r04_270 270 fillet 0.4 "[-10,8,0]"
+          mk r04_280 280 fillet 0.4 "[-10,8,0]"
+          mk r04_320 320 fillet 0.4 "[-10,8,0]"
+          mk r04_330 330 fillet 0.4 "[-10,8,0]"
+          mk r1_300 300 fillet 1 "[-10,8,0]"
+          mk r2_300 300 fillet 2 "[-10,8,0]"
+          mk c04_300 300 chamfer 0.4 "[-10,8,0]"
+          mk in04_300 300 fillet 0.4 "[-2,8,0]"
+          for f in r04_300 r04_270 r04_280 r04_320 r04_330 r1_300 r2_300 c04_300 in04_300; do
+            echo "=== $f"
+            timeout 600 ./target/release/solidcraft-cli eval replay/$f.json --json-out replay/$f.out.json > replay/$f.eval.txt 2>&1 || true
+            tail -3 replay/$f.eval.txt
+            python3 - "replay/$f.out.json" <<'PY' || true
+          import json, sys
+          try:
+              o = json.load(open(sys.argv[1], encoding="utf-8"))
+          except Exception as e:
+              print("  no eval json:", e); sys.exit()
+          for b in o.get("bodies", []):
+              print("  body", b.get("name"), "V", b.get("volume_mm3"), "F/E/V", b.get("faces"), b.get("edges"), b.get("vertices"), "closed", b.get("closed"))
+          PY
+          done
