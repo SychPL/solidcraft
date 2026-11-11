@@ -1,0 +1,225 @@
+# Fork-only (never upstream): checks for tangency-labs/solidcraft#14929 (#14852) on GitHub-hosted
+# runners, since the fork has no Blacksmith runners.
+name: fork-14852
+on:
+  push:
+    branches: [fork-ci-14852]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  MAIN_SHA: 525171eb861f172bdc1e23c7c5c070a44a8fc831
+  TEST_ONLY_SHA: 7b8e159060ad362dd009fda5057905e9f1ae3b31
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Repository checks
+        if: always()
+        run: |
+          cargo xtask layers
+          cargo xtask lists
+          cargo xtask mesh-decisions
+      - name: Joint tests (doc and engine)
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --profile ci --locked -p solidcraft-doc --lib -- joints 2>&1 | grep -E '^(test result|failures|---- |test .*(FAILED|ball))'
+          cargo test --profile ci --locked -p solidcraft-engine --lib -- cmd::joints:: cmd::motion 2>&1 | grep -E '^(test result|failures|---- |test .*(FAILED|ball|loop|four_bar|reach))'
+  before:
+    # The regression test alone on main (main + the test, no fix): it must fail.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TEST_ONLY_SHA }}
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The new test on main, without the fix
+        run: |
+          set +e
+          cargo test --profile ci --locked -p solidcraft-engine --lib -- a_loop_through_a_ball_joint_at_rest_drives > "$RUNNER_TEMP/before.txt" 2>&1
+          grep -E "^(test |test result|thread|.*(stopped_by_loop|°:))" "$RUNNER_TEMP/before.txt" | cut -c1-600
+          if grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/before.txt"; then echo "the test passed without the fix: it does not reproduce #14852"; exit 1; fi
+          if grep -q "1 failed" "$RUNNER_TEMP/before.txt"; then echo "as expected: the test fails on main without the fix"; exit 0; fi
+          tail -n 40 "$RUNNER_TEMP/before.txt"; exit 1
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo xtask wasm
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # As upstream's pull request tests: the packages the change reaches (scripts/ci/affected.py),
+      # graded against tests/KNOWN_FAILING_TESTS.
+      - name: Tests (the affected packages, the pull request's default filter)
+        run: |
+          printf '%s\0' crates/doc/src/joints.rs crates/doc/src/joints_reach.rs crates/engine/src/cmd/joints_tests.rs > "$RUNNER_TEMP/paths"
+          python3 -I scripts/ci/affected.py --paths "$RUNNER_TEMP/paths" | tee "$RUNNER_TEMP/affected"
+          scope=(--workspace)
+          if [ "$(sed -n 's/^full=//p' "$RUNNER_TEMP/affected")" != true ]; then
+            scope=(); for p in $(sed -n 's/^packages=//p' "$RUNNER_TEMP/affected"); do scope+=(-p "$p"); done
+          fi
+          junit=target/nextest/ci/junit.xml
+          rm -f "$junit"
+          status=0
+          cargo nextest run "${scope[@]}" --cargo-profile ci --locked --profile ci --no-tests=pass --partition hash:${{ matrix.shard }}/4 \
+            -E 'default() - (package(solidcraft-gpu) & test(/^path::/)) - test(=action_matrix_sample)' || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then exit "$status"; fi
+          cargo xtask known-failing --junit "$junit"
+  screenshots:
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [main, pr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GPU: software
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.build == 'main' && env.MAIN_SHA || github.sha }}
+      - name: Install Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 xvfb xauth x11-apps imagemagick libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libx11-xcb1
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p solidcraft --profile ci --locked
+      - name: An ankle loop through a ball joint made as built, its crank driven 15 degrees
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          mkdir -p shots
+          cat > "$RUNNER_TEMP/shots.py" <<'PY'
+          import json, os, secrets, socket, subprocess, sys, time
+          tmp, build = os.environ["RUNNER_TEMP"], os.environ["BUILD"]
+          port = 18852
+          token = secrets.token_hex(32)
+          env = dict(os.environ, SOLIDCRAFT_CONTROL_TOKEN=token, SOLIDCRAFT_CONTROL_DIR=os.path.join(tmp, "control"))
+          log = open(os.path.join(tmp, "app.log"), "wb")
+          app = subprocess.Popen(["xvfb-run", "-n", "99", "-s", "-screen 0 1400x900x24 -nolisten tcp", "target/ci/solidcraft", "--control", str(port)],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          deadline = time.monotonic() + 120
+          while True:
+              try:
+                  sock = socket.create_connection(("127.0.0.1", port), timeout=120)
+                  break
+              except OSError:
+                  if app.poll() is not None or time.monotonic() > deadline:
+                      sys.exit("the app never listened")
+                  time.sleep(0.3)
+          io = sock.makefile("rw", encoding="utf-8")
+          n = 0
+          def call(method, params=None, ok=True):
+              global n
+              n += 1
+              req = {"id": n, "method": method, "params": params or {}}
+              if n == 1:
+                  req["token"] = token
+              io.write(json.dumps(req) + "\n")
+              io.flush()
+              reply = json.loads(io.readline())
+              if ok and reply.get("ok") is not True:
+                  sys.exit(f"{method} {params} failed: {reply}")
+              return reply
+          def run(command, params):
+              return call("engine.execute", {"command": command, "params": params}).get("result")
+          def values():
+              joints = run("joint.list", {"quiet": True}).get("joints", [])
+              return ", ".join(f"{j.get('name')} {json.dumps(j.get('values'))}" for j in joints)
+          def shot(name):
+              time.sleep(1.5)
+              path = os.path.abspath(f"shots/{build}-{name}.png")
+              r = call("ui.screenshot", {"path": path}, ok=False)
+              if r.get("ok") is not True or not os.path.exists(path):
+                  print(f"ui.screenshot failed ({r}), taking the X screen instead", flush=True)
+                  subprocess.run(["import", "-display", ":99", "-window", "root", path], check=True)
+              print(f"shot {path}", flush=True)
+
+          call("ui.resize", {"width": 1400, "height": 900})
+          call("ui.home", {"open": False}, ok=False)
+          # The links as bars: hip (0, 10, 40), crank tip (20, 10, 40), ankle (20, 10, 0), heel (0, 0, 0).
+          for name, size, corner in [("Shank", [4, 14, 44], [-6, -2, -2]), ("Crank", [24, 4, 4], [-2, 8, 38]), ("Rod", [4, 4, 36], [18, 8, 2]),
+                                     ("Cross", [4, 4, 4], [18, 8, -2]), ("Foot", [26, 16, 2], [-2, -2, -6])]:
+              run("component.activate", {"component": 0})
+              run("component.create", {"name": name})
+              run("solid.box", {"length": size[0], "width": size[1], "height": size[2], "corner": corner})
+          run("component.activate", {"component": 0})
+          run("occurrence.ground", {"occurrence": "Shank:1", "grounded": True})
+          def pin(name, a, b, p, z):
+              side = lambda o: {"occurrence": o, "point": p, "z": z}
+              r = run("joint.create", {"type": "revolute", "a": side(a), "b": side(b), "flip": True, "name": name})
+              print(f"[{build}] {name}: conflicts {json.dumps(r.get('conflicts'))}", flush=True)
+          pin("Hip", "Shank", "Crank", [0, 10, 40], [0, 1, 0])
+          tip = lambda o: {"occurrence": o, "frame": {"origin": [20, 10, 40], "z": [0, 0, 1], "x": [0, 1, 0]}}
+          r = run("joint.create", {"type": "ball", "a": tip("Crank"), "b": tip("Rod"), "flip": True, "name": "Ball"})
+          print(f"[{build}] Ball: conflicts {json.dumps(r.get('conflicts'))}", flush=True)
+          pin("Ankle pitch", "Rod", "Cross", [20, 10, 0], [0, 1, 0])
+          pin("Ankle roll", "Cross", "Foot", [20, 10, 0], [1, 0, 0])
+          pin("Heel", "Shank", "Foot", [0, 0, 0], [1, 0, 0])
+          call("ui.view", {"view": "iso"})
+          call("ui.view", {"view": "fit"})
+          print(f"[{build}] before: {values()}", flush=True)
+          shot("before")
+          r = run("joint.drive", {"joint": "Hip", "value": 15})
+          print(f"[{build}] joint.drive Hip 15: value {json.dumps(r.get('values', [{}])[0].get('value'))}, stopped_by_loop {json.dumps(r.get('stopped_by_loop'))}, conflicts {json.dumps(r.get('conflicts'))}", flush=True)
+          print(f"[{build}] after: {values()}", flush=True)
+          shot("after")
+          call("app.quit", {"force": True}, ok=False)
+          app.wait(timeout=60)
+          PY
+          set -o pipefail
+          python3 -I "$RUNNER_TEMP/shots.py" | tee "shots/transcript-${BUILD}.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots-${{ matrix.build }}
+          path: |
+            shots/
+            ${{ runner.temp }}/app.log
